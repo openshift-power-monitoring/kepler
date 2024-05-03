@@ -1,7 +1,5 @@
 all: kepler
 
-include bpfassets/libbpf/Makefile
-
 ##@ Help
 
 # The help target prints out all targets with their descriptions organized
@@ -18,7 +16,6 @@ include bpfassets/libbpf/Makefile
 .PHONY: help
 help: ## Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
-
 
 ### env define ###
 export BIN_TIMESTAMP ?=$(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
@@ -43,7 +40,6 @@ CTR_CMD            ?= $(or $(shell podman info > /dev/null 2>&1 && which podman)
 # E.g. --tls-verify=false for local develop when using podman
 CTR_CMD_PUSH_OPTIONS ?=
 
-
 ifeq ($(DEBUG),true)
 	# throw all the debug info in!
 	LD_FLAGS =
@@ -64,10 +60,7 @@ GOARCH := $(shell go env GOARCH)
 GOENV := GOOS=$(GOOS) GOARCH=$(GOARCH)
 
 LIBBPF_HEADERS := /usr/include/bpf
-KEPLER_OBJ_SRC := $(SRC_ROOT)/bpfassets/libbpf/bpf.o/$(GOARCH)_kepler.bpf.o
-LIBBPF_OBJ ?= /usr/lib64/libbpf.a
-
-GOENV = GO111MODULE="" GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=1 CC=clang CGO_CFLAGS="-I $(LIBBPF_HEADERS)" CGO_LDFLAGS="$(LIBBPF_OBJ)"
+GOENV = GO111MODULE="" GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=1 CC=clang CGO_CFLAGS="-I $(LIBBPF_HEADERS) -I/usr/include/" CGO_LDFLAGS="-lelf -lz -lbpf"
 
 DOCKERFILE := $(SRC_ROOT)/build/Dockerfile
 IMAGE_BUILD_TAG := $(GIT_VERSION)-linux-$(GOARCH)
@@ -127,7 +120,7 @@ build_image_dcgm:  image_builder_check ## Build image with DCGM.
 	$(CTR_CMD) tag $(IMAGE_REPO)/$(IMAGE_NAME):$(IMAGE_BUILD_TAG)-dcgm $(IMAGE_REPO)/$(IMAGE_NAME):$(IMAGE_TAG)-dcgm
 .PHONY: build_image_dcgm
 
-build_containerized: tidy-vendor format build_image build_image_dcgm  ## Build ALL container images.
+build_containerized: build_image build_image_dcgm  ## Build ALL container images.
 .PHONY: build_containerized
 
 save-image: ## Save container image.
@@ -157,7 +150,8 @@ clean-cross-build:
 build: clean_build_local _build_local copy_build_local ##  Build binary and copy to $(OUTPUT_DIR)/bin
 .PHONY: build
 
-_build_local: genlibbpf ##  Build Kepler binary locally.
+_build_local: ##  Build Kepler binary locally.
+	@make -C bpfassets/libbpf
 	@echo TAGS=$(GO_BUILD_TAGS)
 	@mkdir -p "$(CROSS_BUILD_BINDIR)/$(GOOS)_$(GOARCH)"
 	+@$(GOENV) go build -v -tags ${GO_BUILD_TAGS} -o $(CROSS_BUILD_BINDIR)/$(GOOS)_$(GOARCH)/kepler -ldflags $(LDFLAGS) ./cmd/exporter/exporter.go
@@ -279,6 +273,10 @@ check-govuln: govulncheck tidy-vendor
 format:
 	./automation/presubmit-tests/gofmt.sh
 
+c-format:
+	@echo "Checking c format"
+	@git ls-files -- '*.c' '*.h' ':!:vendor' ':!:bpfassets/libbpf/include/' | xargs clang-format --dry-run --Werror
+
 golint:
 	@mkdir -p $(base_dir)/.cache/golangci-lint
 	$(CTR_CMD) pull golangci/golangci-lint:latest
@@ -289,12 +287,11 @@ golint:
 		golangci/golangci-lint \
 		golangci-lint run --verbose
 
-genlibbpf: kepler.bpf.o
-
 TOOLS = govulncheck \
 		jq \
 		kubectl \
 		kustomize \
+		yq \
 
 tools:
 	./hack/tools.sh
@@ -312,7 +309,7 @@ CLUSTER_PROVIDER ?= kind
 LOCAL_DEV_CLUSTER_VERSION ?= main
 
 KIND_WORKER_NODES ?=2
-
+BUILD_CONTAINERIZED ?= build_image
 
 COMPOSE_DIR="$(PROJECT_DIR)/manifests/compose"
 DEV_TARGET ?= dev
@@ -327,7 +324,7 @@ compose: ## Setup kepler (latest) using docker compose
 	@echo "  * Grafana    : http://localhost:3000"
 	@echo "  * Prometheus : http://localhost:9090"
 	@echo -e "\nKepler Deployments"
-	@echo "  * latest / upstream  : http://localhost:9288/metrics" 
+	@echo "  * latest / upstream  : http://localhost:9288/metrics"
 
 .PHONY: compose-clean
 compose-clean: ## Cleanup kepler (latest) deployed using docker compose
@@ -336,10 +333,9 @@ compose-clean: ## Cleanup kepler (latest) deployed using docker compose
 		down --remove-orphans --volumes --rmi all
 
 .PHONY: dev
-dev: ## Setup kepler development env using docker compose
+dev: ## Setup development env using compose with 2 kepler (latest & current) deployed
 	docker compose \
-			-f $(COMPOSE_DIR)/compose.yaml \
-			-f $(COMPOSE_DIR)/compose.$(DEV_TARGET).yaml \
+			-f $(COMPOSE_DIR)/$(DEV_TARGET)/compose.yaml \
 		up --build -d
 	@echo -e "\nDeployment Overview (compose file: hack/compose.yaml) \n"
 	@echo "Services"
@@ -349,10 +345,9 @@ dev: ## Setup kepler development env using docker compose
 	@echo "  * development version : http://localhost:9188/metrics"
 	@echo "  * latest / upstream   : http://localhost:9288/metrics"
 
-dev-clean: ## Setup kepler (current and latest) along with 
+dev-clean: ## Setup kepler (current and latest) along with
 	docker compose \
-			-f $(COMPOSE_DIR)/compose.yaml \
-			-f $(COMPOSE_DIR)/compose.$(DEV_TARGET).yaml \
+			-f $(COMPOSE_DIR)/$(DEV_TARGET)/compose.yaml \
 		down --remove-orphans --volumes --rmi all
 .PHONY: dev-clean
 
@@ -364,13 +359,17 @@ cluster-clean: build-manifest ## Undeploy Kepler in the cluster.
 .PHONY: cluster-clean
 
 cluster-deploy: ## Deploy Kepler in the cluster.
+	BUILD_CONTAINERIZED=$(BUILD_CONTAINERIZED) \
 	./hack/cluster-deploy.sh
 .PHONY: cluster-deploy
 
-cluster-up:  ## Create the Kind cluster
+cluster-up:  ## Create the Kind cluster, with Prometheus, Grafana and Kepler
 	CLUSTER_PROVIDER=$(CLUSTER_PROVIDER) \
 	LOCAL_DEV_CLUSTER_VERSION=$(LOCAL_DEV_CLUSTER_VERSION) \
 	KIND_WORKER_NODES=$(KIND_WORKER_NODES) \
+	BUILD_CONTAINERIZED=$(BUILD_CONTAINERIZED) \
+	PROMETHEUS_ENABLE=true \
+	GRAFANA_ENABLE=true \
 	./hack/cluster.sh up
 .PHONY: cluster-up
 
