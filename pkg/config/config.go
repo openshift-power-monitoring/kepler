@@ -62,13 +62,11 @@ const (
 var (
 	modelServerService = fmt.Sprintf("kepler-model-server.%s.svc.cluster.local", KeplerNamespace)
 
-	EnabledMSR            = false
-	EnabledBPFBatchDelete = true
+	EnabledMSR = false
 
 	KernelVersion = float32(0)
 
 	KeplerNamespace              = getConfig("KEPLER_NAMESPACE", defaultNamespace)
-	UseLibBPFAttacher            = false
 	EnabledEBPFCgroupID          = getBoolConfig("ENABLE_EBPF_CGROUPID", true)
 	EnabledGPU                   = getBoolConfig("ENABLE_GPU", false)
 	EnabledQAT                   = getBoolConfig("ENABLE_QAT", false)
@@ -455,15 +453,8 @@ func GetModelConfigMap() map[string]string {
 	return configMap
 }
 
-func IsHCMetricsEnabled() bool {
-	return ExposeHardwareCounterMetrics
-}
 func IsCgroupMetricsEnabled() bool {
 	return ExposeCgroupMetrics
-}
-
-func IsIRQCounterMetricsEnabled() bool {
-	return ExposeIRQCounterMetrics
 }
 
 func SetGpuUsageMetric(metric string) {
