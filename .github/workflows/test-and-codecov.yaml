@@ -1,13 +1,14 @@
-name: Upload Coverage to Codecov
+name: Test and Upload Coverage
 
 on:
   workflow_call:
     secrets:
       CODECOV_TOKEN:
+        description: Codecov token
         required: true
 
 jobs:
-  upload-coverage:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
@@ -21,6 +22,24 @@ jobs:
       - name: Run tests and generate coverage
         shell: bash
         run: make test
+
+      - name: Upload coverage report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out # The file name of the coverage report should be same as what make target uses
+
+  coverage-upload:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Download coverage report artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5.4.0

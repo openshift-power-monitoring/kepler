@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/procfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/sustainable-computing-io/kepler/internal/k8s/pod"
 	testclock "k8s.io/utils/clock/testing"
 )
 
@@ -24,6 +25,7 @@ func TestNewProcess(t *testing.T) {
 		mockProc.On("Cgroups").Return([]cGroup{{Path: "/system.slice/test.service"}}, nil)
 		mockProc.On("Environ").Return([]string{}, nil).Maybe()
 		mockProc.On("CmdLine").Return([]string{"/bin/bash"}, nil).Maybe()
+		mockProc.On("CPUTime").Return(float64(10.5), nil).Once()
 
 		process, err := newProcess(mockProc)
 		require.NoError(t, err)
@@ -31,14 +33,20 @@ func TestNewProcess(t *testing.T) {
 		assert.Equal(t, 12345, process.PID)
 		assert.Equal(t, "test-process", process.Comm)
 		assert.Equal(t, "/usr/bin/test", process.Exe)
+		assert.Equal(t, float64(10.5), process.CPUTotalTime)
+		assert.Equal(t, float64(10.5), process.CPUTimeDelta)
 		assert.Nil(t, process.Container) // Not a container process
 
 		mockProc.AssertExpectations(t)
 	})
 
 	t.Run("Error getting Comm", func(t *testing.T) {
-		mockProc := new(MockProcInfo)
-		mockProc.On("Comm").Return("", errors.New("comm error"))
+		mockProc := &MockProcInfo{}
+		mockProc.On("PID").Return(12345)
+		mockProc.On("Environ").Return([]string{}, nil).Maybe()
+		mockProc.On("CmdLine").Return([]string{"/bin/bash"}, nil).Maybe()
+		mockProc.On("Comm").Return("", assert.AnError)
+		mockProc.On("CPUTime").Return(float64(10.5), nil).Once()
 
 		process, err := newProcess(mockProc)
 		assert.Error(t, err)
@@ -49,9 +57,11 @@ func TestNewProcess(t *testing.T) {
 	})
 
 	t.Run("Error getting Executable", func(t *testing.T) {
-		mockProc := new(MockProcInfo)
+		mockProc := &MockProcInfo{}
+		mockProc.On("PID").Return(12345)
 		mockProc.On("Comm").Return("test-process", nil)
 		mockProc.On("Executable").Return("", errors.New("executable error"))
+		mockProc.On("CPUTime").Return(float64(10.5), nil).Once()
 
 		process, err := newProcess(mockProc)
 		assert.Error(t, err)
@@ -62,10 +72,13 @@ func TestNewProcess(t *testing.T) {
 	})
 
 	t.Run("Error getting Cgroups", func(t *testing.T) {
-		mockProc := new(MockProcInfo)
+		mockProc := &MockProcInfo{}
+		mockProc.On("PID").Return(12345)
 		mockProc.On("Comm").Return("test-process", nil)
 		mockProc.On("Executable").Return("/usr/bin/test", nil)
+		mockProc.On("CmdLine").Return([]string{"/usr/bin/test", "this", "out"}, nil).Maybe()
 		mockProc.On("Cgroups").Return([]cGroup{}, errors.New("cgroups error"))
+		mockProc.On("CPUTime").Return(float64(10.5), nil).Once()
 
 		process, err := newProcess(mockProc)
 		assert.Error(t, err)
@@ -76,10 +89,12 @@ func TestNewProcess(t *testing.T) {
 	})
 
 	t.Run("Create container process", func(t *testing.T) {
-		mockProc := new(MockProcInfo)
+		mockProc := &MockProcInfo{}
 		mockProc.On("PID").Return(12345)
 		mockProc.On("Comm").Return("container-process", nil)
 		mockProc.On("Executable").Return("/usr/bin/container", nil)
+		mockProc.On("CmdLine").Return([]string{"/usr/bin/container"}, nil)
+		mockProc.On("CPUTime").Return(float64(10.5), nil)
 
 		ctrID := "316de3e24617ffce955b712c990dd057e7088fc9720e578cb18d874aac72deb0"
 		mockProc.On("Cgroups").Return([]cGroup{{Path: fmt.Sprintf("/sys/fs/cgroup/system.slice/docker-%s.scope", ctrID)}}, nil)
@@ -108,9 +123,9 @@ func TestResourceInformer(t *testing.T) {
 		mockProc.On("Comm").Return("test-process", nil)
 		mockProc.On("Executable").Return("/usr/bin/test", nil)
 		mockProc.On("Cgroups").Return([]cGroup{{Path: "/system.slice/test.service"}}, nil)
-		mockProc.On("CPUTime").Return(float64(10.5), nil).Once()
 		mockProc.On("Environ").Return([]string{}, nil).Maybe()
-		mockProc.On("CmdLine").Return([]string{"/bin/bash"}, nil).Maybe()
+		mockProc.On("CmdLine").Return([]string{"/bin/bash"}, nil)
+		mockProc.On("CPUTime").Return(float64(10.5), nil).Once()
 
 		// AllProcs calls
 		mockProcFS := &MockProcReader{}
@@ -130,6 +145,7 @@ func TestResourceInformer(t *testing.T) {
 
 		// First refresh
 		mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Once() // first
+		mockProcFS.On("CPUUsageRatio").Return(float64(0.25), nil).Once()
 		err = informer.Refresh()
 		require.NoError(t, err)
 
@@ -143,6 +159,12 @@ func TestResourceInformer(t *testing.T) {
 		assert.Equal(t, float64(10.5), processes.Running[12345].CPUTotalTime)
 		assert.Equal(t, float64(10.5), processes.Running[12345].CPUTimeDelta) // First time, delta equals total
 
+		// Check Node information
+		node := informer.Node()
+		require.NotNil(t, node)
+		assert.Equal(t, float64(0.25), node.CPUUsageRatio)
+		assert.Equal(t, float64(10.5), node.ProcessTotalCPUTimeDelta)
+
 		// Check containers (none in this test)
 		containers := informer.Containers()
 		require.NotNil(t, containers)
@@ -150,8 +172,9 @@ func TestResourceInformer(t *testing.T) {
 		assert.Len(t, containers.Terminated, 0)
 
 		// For second Refresh - same process with increased CPU time
-		mockProc.On("CPUTime").Return(float64(15.0), nil)
+		mockProc.On("CPUTime").Return(float64(15.0), nil).Once()
 		mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+		mockProcFS.On("CPUUsageRatio").Return(float64(0.35), nil).Once()
 
 		err = informer.Refresh()
 		require.NoError(t, err)
@@ -160,7 +183,12 @@ func TestResourceInformer(t *testing.T) {
 		processes = informer.Processes()
 		assert.Equal(t, float64(15.0), processes.Running[12345].CPUTotalTime)
 		assert.Equal(t, float64(4.5), processes.Running[12345].CPUTimeDelta) // 15.0 - 10.5 = 4.5
-		assert.Equal(t, float64(4.5), processes.NodeCPUTimeDelta)            // Total delta
+
+		// Check updated Node information
+		node = informer.Node()
+		require.NotNil(t, node)
+		assert.Equal(t, float64(0.35), node.CPUUsageRatio)
+		assert.Equal(t, float64(4.5), node.ProcessTotalCPUTimeDelta)
 
 		mockProcFS.AssertExpectations(t)
 		mockProc.AssertExpectations(t)
@@ -194,6 +222,7 @@ func TestResourceInformer(t *testing.T) {
 
 		// For first Refresh
 		mockInformer.On("AllProcs").Return([]procInfo{mockProc1, mockProc2}, nil).Once()
+		mockInformer.On("CPUUsageRatio").Return(float64(0.1), nil).Once()
 
 		informer, err := NewInformer(
 			WithProcReader(mockInformer),
@@ -212,9 +241,16 @@ func TestResourceInformer(t *testing.T) {
 		assert.Len(t, processes.Running, 2)
 		assert.Len(t, processes.Terminated, 0)
 
+		// Check Node information
+		node := informer.Node()
+		require.NotNil(t, node)
+		assert.Equal(t, float64(0.1), node.CPUUsageRatio)
+		assert.Equal(t, float64(15.0), node.ProcessTotalCPUTimeDelta) // 5.0 + 10.0 = 15.0
+
 		// Second refresh - process 2 is gone
 		mockProc1.On("CPUTime").Return(float64(7.5), nil)
 		mockInformer.On("AllProcs").Return([]procInfo{mockProc1}, nil).Once()
+		mockInformer.On("CPUUsageRatio").Return(float64(0.15), nil).Once()
 
 		// Second refresh
 		err = informer.Refresh()
@@ -230,7 +266,12 @@ func TestResourceInformer(t *testing.T) {
 
 		// Check CPU time delta
 		assert.Equal(t, float64(2.5), processes.Running[1001].CPUTimeDelta) // 7.5 - 5.0 = 2.5
-		assert.Equal(t, float64(2.5), processes.NodeCPUTimeDelta)           // Should match the only running process's delta
+
+		// Check updated Node information
+		node = informer.Node()
+		require.NotNil(t, node)
+		assert.Equal(t, float64(0.15), node.CPUUsageRatio)
+		assert.Equal(t, float64(2.5), node.ProcessTotalCPUTimeDelta) // Only running process delta
 
 		mockInformer.AssertExpectations(t)
 		mockProc1.AssertExpectations(t)
@@ -244,8 +285,9 @@ func TestResourceInformer(t *testing.T) {
 		// Create a container process
 		mockProc := &MockProcInfo{}
 		mockProc.On("PID").Return(2001)
-		mockProc.On("Comm").Return("container-proc", nil).Once()
-		mockProc.On("Executable").Return("/bin/container-app", nil).Once()
+		mockProc.On("Comm").Return("container-proc", nil)
+		mockProc.On("Executable").Return("/bin/container-app", nil)
+		mockProc.On("CmdLine").Return([]string{"/bin/container-app", "-with", "args"}, nil)
 		mockProc.On("Environ").Return([]string{
 			"CONTAINER_NAME=test-container",
 		}, nil)
@@ -263,6 +305,7 @@ func TestResourceInformer(t *testing.T) {
 
 		// Initialize
 		mockInformer.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+		mockInformer.On("CPUUsageRatio").Return(float64(0.3), nil).Once()
 		err = informer.Init()
 		require.NoError(t, err)
 
@@ -270,6 +313,12 @@ func TestResourceInformer(t *testing.T) {
 		mockInformer.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
 		err = informer.Refresh()
 		require.NoError(t, err)
+
+		// Check Node information
+		node := informer.Node()
+		require.NotNil(t, node)
+		assert.Equal(t, float64(0.3), node.CPUUsageRatio)
+		assert.Equal(t, float64(3.0), node.ProcessTotalCPUTimeDelta)
 
 		// Verify process is tracked
 		processes := informer.Processes()
@@ -287,11 +336,11 @@ func TestResourceInformer(t *testing.T) {
 		assert.Equal(t, "test-container", c.Name)
 		assert.Equal(t, PodmanRuntime, c.Runtime)
 		assert.Equal(t, float64(3.0), c.CPUTimeDelta)
-		assert.Equal(t, float64(3.0), containers.NodeCPUTimeDelta)
 
 		// For second Refresh - increased CPU time
 		mockProc.On("CPUTime").Return(float64(5.0), nil).Once()
 		mockInformer.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+		mockInformer.On("CPUUsageRatio").Return(float64(0.45), nil).Once()
 
 		// Second refresh
 		err = informer.Refresh()
@@ -301,7 +350,12 @@ func TestResourceInformer(t *testing.T) {
 		containers = informer.Containers()
 		assert.Equal(t, float64(5.0), containers.Running[ctnrID].CPUTotalTime)
 		assert.Equal(t, float64(2.0), containers.Running[ctnrID].CPUTimeDelta)
-		assert.Equal(t, float64(2.0), processes.NodeCPUTimeDelta) // Delta should be 2.0
+
+		// Check updated Node information
+		node = informer.Node()
+		require.NotNil(t, node)
+		assert.Equal(t, float64(0.45), node.CPUUsageRatio)
+		assert.Equal(t, float64(2.0), node.ProcessTotalCPUTimeDelta)
 
 		mockInformer.AssertExpectations(t)
 		mockProc.AssertExpectations(t)
@@ -316,6 +370,7 @@ func TestResourceInformer(t *testing.T) {
 		mockProc.On("PID").Return(3001)
 		mockProc.On("Comm").Return("container-app", nil)
 		mockProc.On("Executable").Return("/bin/container-app", nil)
+		mockProc.On("CmdLine").Return([]string{"/bin/container-app", "-with", "args"}, nil)
 		cntrID, cgroupPath := mockContainerIDAndPath(PodmanRuntime)
 		mockProc.On("Cgroups").Return([]cGroup{{Path: cgroupPath}}, nil)
 		mockProc.On("Environ").Return([]string{"CONTAINER_NAME=test-container"}, nil)
@@ -326,6 +381,7 @@ func TestResourceInformer(t *testing.T) {
 
 		// For first Refresh
 		mockInformer.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+		mockInformer.On("CPUUsageRatio").Return(float64(0.0), nil).Once()
 
 		informer, err := NewInformer(
 			WithProcReader(mockInformer),
@@ -348,6 +404,7 @@ func TestResourceInformer(t *testing.T) {
 
 		// Second refresh - container process is gone
 		mockInformer.On("AllProcs").Return([]procInfo{}, nil).Once()
+		mockInformer.On("CPUUsageRatio").Return(float64(0.3), nil).Once()
 
 		// Move clock forward
 		fakeClock.Step(1000 * 1000 * 1000) // 1 second
@@ -402,6 +459,258 @@ func TestResourceInformer(t *testing.T) {
 	})
 }
 
+func TestRefresh_PodInformer(t *testing.T) {
+	t.Run("Uses podInformer successfully", func(t *testing.T) {
+		mockProc := &MockProcInfo{}
+		mockProc.On("PID").Return(123)
+		mockProc.On("Comm").Return("test-process", nil)
+		mockProc.On("CmdLine").Return([]string{"/usr/bin/test", "--arg1"}, nil).Once()
+		mockProc.On("Executable").Return("/usr/bin/test", nil)
+		containerID, cgPath := mockContainerIDAndPath(DockerRuntime)
+		mockProc.On("Cgroups").Return([]cGroup{{Path: cgPath}}, nil)
+		mockProc.On("CPUTime").Return(10.0, nil).Once()
+		mockProc.On("Environ").Return([]string{"CONTAINER_NAME=my-container"}, nil)
+
+		mockProcFS := &MockProcReader{}
+		mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Twice()
+		mockProcFS.On("CPUUsageRatio").Return(0.5, nil).Once()
+
+		mockPodInformer := new(mockPodInformer)
+		mockPodInformer.On("LookupByContainerID", containerID).Return(
+			&pod.ContainerInfo{
+				PodID:         "pod123",
+				PodName:       "mypod",
+				Namespace:     "default",
+				ContainerName: "my-container",
+			}, true, nil,
+		)
+
+		informer, err := NewInformer(WithProcReader(mockProcFS), WithPodInformer(mockPodInformer))
+		require.NoError(t, err)
+		err = informer.Init()
+		require.NoError(t, err)
+		err = informer.Refresh()
+		require.NoError(t, err)
+
+		pods := informer.Pods()
+		assert.Len(t, pods.Running, 1)
+		assert.Equal(t, "mypod", pods.Running["pod123"].Name)
+
+		mockPodInformer.AssertExpectations(t)
+		mockProcFS.AssertExpectations(t)
+		mockProc.AssertExpectations(t)
+	})
+	t.Run("podInformer returns ErrNoPod", func(t *testing.T) {
+		mockProc := &MockProcInfo{}
+		mockProc.On("PID").Return(456)
+		mockProc.On("Comm").Return("container-process", nil)
+		mockProc.On("Executable").Return("/usr/bin/container-exec", nil)
+		mockProc.On("CPUTime").Return(10.0, nil).Once()
+		mockProc.On("Environ").Return([]string{"CONTAINER_NAME=my-container"}, nil)
+		mockProc.On("CmdLine").Return([]string{"/usr/bin/container-exec"}, nil).Once()
+
+		containerID, cgPath := mockContainerIDAndPath(DockerRuntime)
+		mockProc.On("Cgroups").Return([]cGroup{{Path: cgPath}}, nil)
+
+		mockProcFS := &MockProcReader{}
+		mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Twice()
+		mockProcFS.On("CPUUsageRatio").Return(0.5, nil).Once()
+
+		mockPodInformer := new(mockPodInformer)
+		mockPodInformer.On("LookupByContainerID", containerID).Return(nil, false, nil)
+
+		informer, err := NewInformer(
+			WithProcReader(mockProcFS),
+			WithPodInformer(mockPodInformer),
+		)
+		require.NoError(t, err)
+
+		err = informer.Init()
+		require.NoError(t, err)
+
+		err = informer.Refresh()
+		require.NoError(t, err)
+
+		pods := informer.Pods()
+		assert.Empty(t, pods.Running)
+		assert.Contains(t, pods.ContainersNoPod, containerID)
+
+		mockPodInformer.AssertExpectations(t)
+		mockProcFS.AssertExpectations(t)
+		mockProc.AssertExpectations(t)
+	})
+	t.Run("podInformer returns a general error", func(t *testing.T) {
+		mockProc := &MockProcInfo{}
+		mockProc.On("PID").Return(789)
+		mockProc.On("Comm").Return("container-process", nil)
+		mockProc.On("Executable").Return("/usr/bin/container-exec", nil)
+		mockProc.On("CPUTime").Return(10.0, nil).Once()
+		mockProc.On("Environ").Return([]string{"CONTAINER_NAME=my-container"}, nil)
+		mockProc.On("CmdLine").Return([]string{"/usr/bin/container-exec"}, nil).Once()
+
+		containerID, cgPath := mockContainerIDAndPath(DockerRuntime)
+		mockProc.On("Cgroups").Return([]cGroup{{Path: cgPath}}, nil)
+
+		mockProcFS := &MockProcReader{}
+		mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Twice()
+		mockProcFS.On("CPUUsageRatio").Return(0.5, nil).Once()
+
+		podError := errors.New("general error")
+		mockPodInformer := new(mockPodInformer)
+		mockPodInformer.On("LookupByContainerID", containerID).Return(nil, false, podError)
+
+		informer, err := NewInformer(
+			WithProcReader(mockProcFS),
+			WithPodInformer(mockPodInformer),
+		)
+		require.NoError(t, err)
+
+		err = informer.Init()
+		require.NoError(t, err)
+
+		err = informer.Refresh()
+		require.ErrorContains(t, err, "failed to get pod for container")
+
+		// even if podInformer has general errors, informer should continue gracefully
+		pods := informer.Pods()
+		assert.Empty(t, pods.Running)
+		assert.NotContains(t, pods.ContainersNoPod, containerID, "Container should not be added to ContainersNoPod on general errors")
+
+		mockPodInformer.AssertExpectations(t)
+		mockProcFS.AssertExpectations(t)
+		mockProc.AssertExpectations(t)
+	})
+}
+
+func TestLookupByContainerID_UpdatesContainerName(t *testing.T) {
+	t.Run("Container name from podInfo updates container cache", func(t *testing.T) {
+		mockProc := &MockProcInfo{}
+		mockProc.On("PID").Return(5001)
+		mockProc.On("Comm").Return("app-container", nil)
+		mockProc.On("Executable").Return("/app/server", nil)
+		mockProc.On("CPUTime").Return(15.0, nil).Once()
+		mockProc.On("Environ").Return([]string{}, nil) // No CONTAINER_NAME in env
+		mockProc.On("CmdLine").Return([]string{"/app/server", "--port=8080"}, nil)
+
+		// Create container with Docker runtime
+		containerID, cgPath := mockContainerIDAndPath(DockerRuntime)
+		mockProc.On("Cgroups").Return([]cGroup{{Path: cgPath}}, nil)
+
+		mockProcFS := &MockProcReader{}
+		mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Twice()
+		mockProcFS.On("CPUUsageRatio").Return(0.4, nil).Once()
+
+		// Mock pod informer that returns container name from pod info
+		mockPodInformer := new(mockPodInformer)
+		mockPodInformer.On("LookupByContainerID", containerID).Return(
+			&pod.ContainerInfo{
+				PodID:         "pod-12345",
+				PodName:       "test-app-pod",
+				Namespace:     "production",
+				ContainerName: "app-container-from-pod", // Container name comes from pod status
+			}, true, nil,
+		)
+
+		informer, err := NewInformer(
+			WithProcReader(mockProcFS),
+			WithPodInformer(mockPodInformer),
+		)
+		require.NoError(t, err)
+
+		err = informer.Init()
+		require.NoError(t, err)
+
+		err = informer.Refresh()
+		require.NoError(t, err)
+
+		// Verify container name is updated from podInfo, not from environment
+		containers := informer.Containers()
+		require.Len(t, containers.Running, 1)
+		container := containers.Running[containerID]
+		require.NotNil(t, container)
+
+		// Container name should come from pod info, not environment
+		assert.Equal(t, "app-container-from-pod", container.Name,
+			"Container name should be set from podInfo.LookupByContainerID")
+		assert.Equal(t, containerID, container.ID)
+		assert.Equal(t, DockerRuntime, container.Runtime)
+
+		// Verify pod information is also set
+		pods := informer.Pods()
+		require.Len(t, pods.Running, 1)
+		podInstance := pods.Running["pod-12345"]
+		require.NotNil(t, podInstance)
+		assert.Equal(t, "test-app-pod", podInstance.Name)
+		assert.Equal(t, "production", podInstance.Namespace)
+
+		// Verify the container has reference to the pod
+		assert.NotNil(t, container.Pod)
+		assert.Equal(t, "pod-12345", container.Pod.ID)
+		assert.Equal(t, "test-app-pod", container.Pod.Name)
+		assert.Equal(t, "production", container.Pod.Namespace)
+
+		mockPodInformer.AssertExpectations(t)
+		mockProcFS.AssertExpectations(t)
+		mockProc.AssertExpectations(t)
+	})
+
+	t.Run("Container name prioritizes podInfo over environment", func(t *testing.T) {
+		mockProc := &MockProcInfo{}
+		mockProc.On("PID").Return(5002)
+		mockProc.On("Comm").Return("web-app", nil)
+		mockProc.On("Executable").Return("/usr/bin/nginx", nil)
+		mockProc.On("CPUTime").Return(8.5, nil).Once()
+		mockProc.On("Environ").Return([]string{"CONTAINER_NAME=nginx-from-env"}, nil)
+		mockProc.On("CmdLine").Return([]string{"/usr/bin/nginx", "-g", "daemon off;"}, nil)
+
+		containerID, cgPath := mockContainerIDAndPath(ContainerDRuntime)
+		mockProc.On("Cgroups").Return([]cGroup{{Path: cgPath}}, nil)
+
+		mockProcFS := &MockProcReader{}
+		mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Twice()
+		mockProcFS.On("CPUUsageRatio").Return(0.2, nil).Once()
+
+		// Pod informer returns different name than environment
+		mockPodInformer := new(mockPodInformer)
+		mockPodInformer.On("LookupByContainerID", containerID).Return(
+			&pod.ContainerInfo{
+				PodID:         "web-pod-67890",
+				PodName:       "web-server",
+				Namespace:     "default",
+				ContainerName: "nginx-from-pod", // Different from environment name
+			}, true, nil,
+		)
+
+		informer, err := NewInformer(
+			WithProcReader(mockProcFS),
+			WithPodInformer(mockPodInformer),
+		)
+		require.NoError(t, err)
+
+		err = informer.Init()
+		require.NoError(t, err)
+
+		err = informer.Refresh()
+		require.NoError(t, err)
+
+		// Verify container name comes from podInfo, not environment
+		containers := informer.Containers()
+		require.Len(t, containers.Running, 1)
+		container := containers.Running[containerID]
+		require.NotNil(t, container)
+
+		// Should use pod name, not environment name
+		assert.Equal(t, "nginx-from-pod", container.Name,
+			"Container name should prioritize podInfo over environment variables")
+		assert.NotEqual(t, "nginx-from-env", container.Name,
+			"Should not use environment container name when podInfo is available")
+
+		mockPodInformer.AssertExpectations(t)
+		mockProcFS.AssertExpectations(t)
+		mockProc.AssertExpectations(t)
+	})
+}
+
 // Test for the procfs fixture to ensure the test fixture directory is available
 // and to test the integration with procfs package
 func TestProcWrapper(t *testing.T) {
@@ -450,7 +759,7 @@ func TestProcFSReader(t *testing.T) {
 	// Test AllProcs
 	procs, err := informer.AllProcs()
 	require.NoError(t, err)
-	assert.Len(t, procs, 5)
+	assert.Len(t, procs, 6) // 1 regular, 4 containers, 1 vm
 }
 
 // Test for the procfs fixture to ensure the test fixture directory is available
@@ -461,10 +770,12 @@ func TestProcFSReaderWithInformer(t *testing.T) {
 
 	// Test AllProcs
 	err = informer.Refresh()
-	assert.NoError(t, err)
+	require.NoError(t, err)
+
+	assert.Equal(t, informer.Node().CPUUsageRatio, 0.0)
 
 	processes := informer.Processes()
-	assert.Len(t, processes.Running, 5)
+	assert.Len(t, processes.Running, 6)
 	assert.Len(t, processes.Terminated, 0)
 
 	containers := informer.Containers()
@@ -481,18 +792,237 @@ func TestProcFSReaderWithInformer(t *testing.T) {
 	assert.Contains(t, runtimes, DockerRuntime)
 
 	// go through all procs and count processes
-	// by controller-runtime
+	// by controller-runtime, and Hypervisor
 
 	containerProcs := map[ContainerRuntime]int{}
-
+	vmProcs := map[Hypervisor]int{}
 	for _, p := range processes.Running {
-		rt := UnknownRuntime
 		if p.Container != nil {
-			rt = p.Container.Runtime
+			containerProcs[p.Container.Runtime]++
 		}
-		containerProcs[rt]++
+
+		if vm := p.VirtualMachine; vm != nil {
+			vmProcs[vm.Hypervisor]++
+		}
+
 	}
+	assert.Equal(t, 0, containerProcs[UnknownRuntime])
 	assert.Equal(t, 1, containerProcs[DockerRuntime])
-	assert.Equal(t, 1, containerProcs[UnknownRuntime])
 	assert.Equal(t, 3, containerProcs[PodmanRuntime])
+	assert.Equal(t, 1, vmProcs[KVMHypervisor])
+
+	vms := informer.VirtualMachines()
+	assert.Len(t, vms.Running, 1)
+	assert.Len(t, vms.Terminated, 0)
+	vmID := "df12672f-fedb-4f6f-9d51-0166868835fb"
+	assert.Contains(t, vms.Running, vmID)
+	assert.Equal(t, vms.Running[vmID].Hypervisor, KVMHypervisor)
+}
+
+func TestProcessUpdateAfterRefresh(t *testing.T) {
+	mockInformer := &MockProcReader{}
+	fakeClock := testclock.NewFakeClock(time.Now())
+
+	const (
+		procCPUTime = 5.0
+	)
+
+	// Initial process state
+	mockProc := &MockProcInfo{}
+	mockProc.On("PID").Return(1001)
+	mockProc.On("Comm").Return("process-initial", nil).Once()
+	mockProc.On("Executable").Return("/bin/process-initial", nil).Once()
+	mockProc.On("Cgroups").Return([]cGroup{{Path: "/system.slice/process.service"}}, nil).Once()
+	mockProc.On("CPUTime").Return(procCPUTime, nil).Once()
+	mockProc.On("Environ").Return([]string{}, nil).Maybe()
+	mockProc.On("CmdLine").Return([]string{"/bin/process-initial"}, nil).Once()
+
+	// For Init
+	mockInformer.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+
+	// For first Refresh
+	mockInformer.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+	mockInformer.On("CPUUsageRatio").Return(float64(0.0), nil).Once()
+
+	informer, err := NewInformer(
+		WithProcReader(mockInformer),
+		WithClock(fakeClock),
+	)
+	require.NoError(t, err)
+
+	// Initialize and first refresh
+	err = informer.Init()
+	require.NoError(t, err)
+
+	err = informer.Refresh()
+	require.NoError(t, err)
+
+	// Verify initial state
+	node := informer.Node()
+	assert.Equal(t, float64(0.0), node.CPUUsageRatio)
+	assert.Equal(t, procCPUTime, node.ProcessTotalCPUTimeDelta)
+
+	processes := informer.Processes()
+	assert.Equal(t, "process-initial", processes.Running[1001].Comm)
+	assert.Equal(t, "/bin/process-initial", processes.Running[1001].Exe)
+	assert.Equal(t, float64(5.0), processes.Running[1001].CPUTotalTime)
+
+	// Second refresh - process has changed comm and executable, with significant CPU time
+	mockProc.On("Comm").Return("process-updated", nil).Once()
+	mockProc.On("CmdLine").Return([]string{"/bin/process-updated"}, nil).Once()
+	mockProc.On("Cgroups").Return([]cGroup{{Path: "/system.slice/process.service"}}, nil).Once()
+	mockProc.On("Executable").Return("/bin/process-updated", nil).Once()
+	mockProc.On("CPUTime").Return(float64(7.0), nil).Once() // 2.0 delta
+
+	mockInformer.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+	mockInformer.On("CPUUsageRatio").Return(0.3, nil).Once()
+
+	// Second refresh
+	err = informer.Refresh()
+	require.NoError(t, err)
+
+	// Verify changes were applied
+	processes = informer.Processes()
+	assert.Equal(t, "process-updated", processes.Running[1001].Comm)
+	assert.Equal(t, "/bin/process-updated", processes.Running[1001].Exe)
+	assert.Equal(t, float64(7.0), processes.Running[1001].CPUTotalTime)
+	assert.Equal(t, float64(2.0), processes.Running[1001].CPUTimeDelta)
+
+	// Third refresh - process changes again but with negligible CPU time delta
+	mockProc.On("CPUTime").Return(float64(7.0000000000001), nil).Once() // Very small delta (1e-13)
+	mockInformer.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+	mockInformer.On("CPUUsageRatio").Return(0.3, nil).Once()
+	// Third refresh
+	err = informer.Refresh()
+	require.NoError(t, err)
+
+	// Verify process wasn't updated due to negligible CPU time
+	processes = informer.Processes()
+	assert.Equal(t, "process-updated", processes.Running[1001].Comm,
+		"Process with negligible CPU time delta should not be updated")
+	assert.Equal(t, "/bin/process-updated", processes.Running[1001].Exe,
+		"Process with negligible CPU time delta should not be updated")
+	assert.InDelta(t, 7.0000000000001, processes.Running[1001].CPUTotalTime, 1e-10)
+	assert.InDelta(t, 1e-13, processes.Running[1001].CPUTimeDelta, 1e-10)
+
+	mockInformer.AssertExpectations(t)
+	mockProc.AssertExpectations(t)
+}
+
+func TestZeroCPUTimeProcess(t *testing.T) {
+	mockProcFS := &MockProcReader{}
+	fakeClock := testclock.NewFakeClock(time.Now())
+
+	// Initial creation of process (new process)
+	mockProc := &MockProcInfo{}
+	mockProc.On("PID").Return(1001).Times(5) // Called multiple times
+	mockProc.On("Comm").Return("zero-cpu-process", nil).Once()
+	mockProc.On("Executable").Return("/bin/zero-cpu-process", nil).Once()
+	mockProc.On("Cgroups").Return([]cGroup{{Path: "/system.slice/process.service"}}, nil).Once()
+	mockProc.On("CPUTime").Return(float64(0.0), nil).Once()
+	mockProc.On("Environ").Return([]string{}, nil).Maybe()
+	mockProc.On("CmdLine").Return([]string{"/bin/zero-cpu-process"}, nil).Maybe()
+
+	// For Init
+	mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+
+	// For first Refresh
+	mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+	mockProcFS.On("CPUUsageRatio").Return(float64(0.0), nil).Once()
+
+	informer, err := NewInformer(
+		WithProcReader(mockProcFS),
+		WithClock(fakeClock),
+	)
+	require.NoError(t, err)
+
+	// Initialize and first refresh
+	err = informer.Init()
+	require.NoError(t, err)
+
+	err = informer.Refresh()
+	require.NoError(t, err)
+
+	// Verify initial state (should be created even with zero CPU time)
+	processes := informer.Processes()
+	assert.Equal(t, "zero-cpu-process", processes.Running[1001].Comm)
+	assert.Equal(t, "/bin/zero-cpu-process", processes.Running[1001].Exe)
+	assert.Equal(t, float64(0.0), processes.Running[1001].CPUTotalTime)
+	assert.Equal(t, float64(0.0), processes.Running[1001].CPUTimeDelta)
+
+	// Second refresh - process with close to 0 CPU delta and should not update process fields
+	mockProc.On("CPUTime").Return(float64(1e-14), nil).Once() // Still zero
+
+	mockProcFS.On("AllProcs").Return([]procInfo{mockProc}, nil).Once()
+	mockProcFS.On("CPUUsageRatio").Return(float64(0.5), nil).Once()
+	// Second refresh
+	err = informer.Refresh()
+	require.NoError(t, err)
+
+	// Verify process wasn't updated due to zero CPU time delta
+	processes = informer.Processes()
+	assert.Equal(t, "zero-cpu-process", processes.Running[1001].Comm,
+		"Process with zero CPU time delta should not be updated")
+	assert.Equal(t, "/bin/zero-cpu-process", processes.Running[1001].Exe,
+		"Process with zero CPU time delta should not be updated")
+	assert.Equal(t, float64(1e-14), processes.Running[1001].CPUTotalTime)
+	assert.Equal(t, float64(1e-14), processes.Running[1001].CPUTimeDelta)
+
+	mockProcFS.AssertExpectations(t)
+	mockProc.AssertExpectations(t)
+}
+
+func TestProcFSReaderCPUUsageRatio(t *testing.T) {
+	t.Run("First call returns zero usage", func(t *testing.T) {
+		// Create a mock reader with no previous stats
+		reader, err := NewProcFSReader("./testdata/procfs")
+		require.NoError(t, err)
+
+		ratio, err := reader.CPUUsageRatio()
+		require.NoError(t, err)
+		assert.Equal(t, float64(0), ratio, "First call should return 0 usage ratio")
+
+		// magic numbers copied from testdata/procfs/stat
+		// cpu  8608833 7605 4179891 1295036209 426072 15697167 1285624 0 5327346 0
+		assert.Equal(t, 86088.33, reader.prevStat.User, "should read user time from procfs")
+		assert.Equal(t, 41798.91, reader.prevStat.System, "should read system time from procfs")
+		assert.Equal(t, 12950362.09, reader.prevStat.Idle, "should read idle time from procfs")
+	})
+
+	t.Run("Second call calculates correct ratio", func(t *testing.T) {
+		reader, err := NewProcFSReader("./testdata/procfs")
+		require.NoError(t, err)
+
+		ratio, err := reader.CPUUsageRatio()
+		require.NoError(t, err)
+		assert.Equal(t, float64(0), ratio, "First call should return 0 usage ratio")
+		// magic numbers copied from testdata/procfs/stat
+		// cpu  8608833 7605 4179891 1295036209 426072 15697167 1285624 0 5327346 0
+		assert.Equal(t, 86088.33, reader.prevStat.User, "should read user time from procfs")
+		assert.Equal(t, 41798.91, reader.prevStat.System, "should read system time from procfs")
+		assert.Equal(t, 12950362.09, reader.prevStat.Idle, "should read idle time from procfs")
+
+		read := reader.prevStat
+		reader.prevStat = procfs.CPUStat{
+			User:    read.User - 500,
+			Nice:    read.Nice - 100,
+			System:  read.System - 300,
+			Idle:    read.Idle - 650,
+			Iowait:  read.Iowait - 50,
+			IRQ:     read.IRQ - 25,
+			SoftIRQ: read.SoftIRQ - 75,
+			Steal:   read.Steal - 50,
+		}
+
+		// total = 500 + 100 + 300 + 650 + 50 + 25 + 75 + 50 = 1750
+		// active = total - idle (idle + iowait) = 1750 - 700 = 1050
+		// ratio = active / total = 1050/1750 = 0.6
+
+		ratio, err = reader.CPUUsageRatio()
+		assert.NoError(t, err, "should not error on second call")
+		assert.InDelta(t, 0.6, ratio, 0.0001, "Second call should calculate correct ratio")
+		assert.Equal(t, 86088.33, reader.prevStat.User, "should read user time from procfs")
+		assert.Equal(t, 41798.91, reader.prevStat.System, "should read system time from procfs")
+		assert.Equal(t, 12950362.09, reader.prevStat.Idle, "should read idle time from procfs")
+	})
 }

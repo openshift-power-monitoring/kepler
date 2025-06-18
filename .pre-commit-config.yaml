@@ -1,3 +1,6 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -25,7 +28,7 @@ repos:
         exclude: go\.(sum|mod)$
 
   - repo: https://github.com/golangci/golangci-lint
-    rev: v2.0.2
+    rev: v2.1.6
     hooks:
       - id: golangci-lint
         args: [--timeout=5m]
@@ -43,3 +46,19 @@ repos:
       - id: reuse-lint-file
         types: [file]
         files: \.go$
+
+  - repo: https://github.com/pecigonzalo/pre-commit-shfmt
+    rev: v2.2.0
+    hooks:
+      - id: shell-fmt-go
+        types: [file]
+        files: \.sh$
+        args:
+          - -w
+          - -l
+
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+        args: [-x]

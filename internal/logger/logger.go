@@ -5,27 +5,33 @@ package logger
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 )
 
-func New(level, format string) *slog.Logger {
-	logLevel := parseLogLevel(level)
-	return slog.New(handlerForFormat(format, logLevel))
+var logLevel slog.Level
+
+func New(level, format string, w io.Writer) *slog.Logger {
+	logLevel = parseLogLevel(level)
+	return slog.New(handlerForFormat(format, logLevel, w))
 }
 
-func handlerForFormat(format string, logLevel slog.Level) slog.Handler {
+func LogLevel() slog.Level {
+	return logLevel
+}
+
+func handlerForFormat(format string, logLevel slog.Level, w io.Writer) slog.Handler {
 	switch format {
 	case "json":
-		return slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		return slog.NewJSONHandler(w, &slog.HandlerOptions{
 			Level:     logLevel,
 			AddSource: true,
 		})
 
 	case "text":
-		return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		return slog.NewTextHandler(w, &slog.HandlerOptions{
 			Level:     logLevel,
 			AddSource: true,
 			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {

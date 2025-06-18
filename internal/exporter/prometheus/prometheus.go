@@ -30,6 +30,7 @@ type Opts struct {
 	debugCollectors map[string]bool
 	collectors      map[string]prom.Collector
 	procfs          string
+	nodeName        string
 }
 
 // DefaultOpts() returns a new Opts with defaults set
@@ -54,9 +55,13 @@ func WithLogger(logger *slog.Logger) OptionFn {
 }
 
 // WithDebugCollectors sets the debug collectors
-func WithDebugCollectors(c *[]string) OptionFn {
+func WithDebugCollectors(c []string) OptionFn {
 	return func(o *Opts) {
-		for _, name := range *c {
+		// Reset existing collectors
+		o.debugCollectors = make(map[string]bool)
+
+		// Add each collector from the list
+		for _, name := range c {
 			o.debugCollectors[name] = true
 		}
 	}
@@ -71,6 +76,12 @@ func WithProcFSPath(procfs string) OptionFn {
 func WithCollectors(c map[string]prom.Collector) OptionFn {
 	return func(o *Opts) {
 		o.collectors = c
+	}
+}
+
+func WithNodeName(nodeName string) OptionFn {
+	return func(o *Opts) {
+		o.nodeName = nodeName
 	}
 }
 
@@ -126,7 +137,7 @@ func CreateCollectors(pm Monitor, applyOpts ...OptionFn) (map[string]prom.Collec
 	}
 	collectors := map[string]prom.Collector{
 		"build_info": collector.NewKeplerBuildInfoCollector(),
-		"power":      collector.NewPowerCollector(pm, opts.logger),
+		"power":      collector.NewPowerCollector(pm, opts.nodeName, opts.logger),
 	}
 	cpuInfoCollector, err := collector.NewCPUInfoCollector(opts.procfs)
 	if err != nil {

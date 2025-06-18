@@ -175,13 +175,20 @@ func (pm *PowerMonitor) scheduleNextCollection() {
 	go func() {
 		select {
 		case <-timer:
+			// Check if context is cancelled before doing any work to avoid a race condition
+			// where the context is cancelled after the timer has expired
+			if err := pm.collectionCtx.Err(); err != nil {
+				pm.logger.Info("Collection loop terminated; context canceled", "reason", err)
+				return
+			}
+
 			if err := pm.synchronizedPowerRefresh(); err != nil {
 				pm.logger.Error("Failed to collect power data", "error", err)
 			}
 			pm.scheduleNextCollection()
 
 		case <-pm.collectionCtx.Done():
-			pm.logger.Info("Collection loop terminated")
+			pm.logger.Info("Collection loop terminated", "reason", pm.collectionCtx.Err())
 			return
 		}
 	}()
@@ -275,6 +282,12 @@ func (pm *PowerMonitor) refreshSnapshot() error {
 	newSnapshot.Timestamp = pm.clock.Now()
 	pm.snapshot.Store(newSnapshot)
 	pm.signalNewData()
+	pm.logger.Debug("refreshSnapshot",
+		"processes", len(newSnapshot.Processes),
+		"containers", len(newSnapshot.Containers),
+		"vms", len(newSnapshot.VirtualMachines),
+		"pods", len(newSnapshot.Pods),
+	)
 
 	return nil
 }
@@ -283,6 +296,8 @@ const (
 	nodePowerError      = "failed to calculate node power: %w"
 	processPowerError   = "failed to calculate process power: %w"
 	containerPowerError = "failed to calculate container power: %w"
+	vmPowerError        = "failed to calculate vm power: %w"
+	podPowerError       = "failed to calculate pod power: %w"
 )
 
 func (pm *PowerMonitor) firstReading(newSnapshot *Snapshot) error {
@@ -306,6 +321,15 @@ func (pm *PowerMonitor) firstReading(newSnapshot *Snapshot) error {
 		return fmt.Errorf(containerPowerError, err)
 	}
 
+	if err := pm.firstVMRead(newSnapshot); err != nil {
+		return fmt.Errorf(vmPowerError, err)
+	}
+
+	// First read for pods
+	if err := pm.firstPodRead(newSnapshot); err != nil {
+		return fmt.Errorf(podPowerError, err)
+	}
+
 	return nil
 }
 
@@ -326,9 +350,18 @@ func (pm *PowerMonitor) calculatePower(prev, newSnapshot *Snapshot) error {
 	}
 
 	// Calculate container power
-	// TODO: implement this based on sum of process power running in containers
 	if err := pm.calculateContainerPower(prev, newSnapshot); err != nil {
 		return fmt.Errorf(containerPowerError, err)
+	}
+
+	// Calculate VM power
+	if err := pm.calculateVMPower(prev, newSnapshot); err != nil {
+		return fmt.Errorf(vmPowerError, err)
+	}
+
+	// calculate pod power
+	if err := pm.calculatePodPower(prev, newSnapshot); err != nil {
+		return fmt.Errorf(podPowerError, err)
 	}
 
 	return nil

@@ -25,11 +25,10 @@ func TestSnapshotThreadSafety(t *testing.T) {
 	fakeClock := testingclock.NewFakeClock(time.Now())
 	fakeMeter, err := device.NewFakeCPUMeter(nil)
 	require.NoError(t, err)
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	monitor := NewPowerMonitor(
 		fakeMeter,
@@ -90,11 +89,10 @@ func TestFreshSnapshotCaching(t *testing.T) {
 	mockMeter.On("Zones").Return(energyZones, nil)
 
 	fakeClock := testingclock.NewFakeClock(time.Now())
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	monitor := NewPowerMonitor(
 		mockMeter,
@@ -146,11 +144,10 @@ func TestStaleSnapshotRefreshing(t *testing.T) {
 	fakeMeter, err := device.NewFakeCPUMeter(nil)
 	require.NoError(t, err)
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	monitor := NewPowerMonitor(
 		fakeMeter,
@@ -211,11 +208,10 @@ func TestSingleflightSnapshot(t *testing.T) {
 	// Create a fake clock to control time
 	fakeClock := testingclock.NewFakeClock(time.Now())
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	// Set up the monitor with a short staleness threshold
 	monitor := NewPowerMonitor(
@@ -300,11 +296,10 @@ func TestSnapshot_ComputeFailures(t *testing.T) {
 		Level: slog.LevelError,
 	}))
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	monitor := NewPowerMonitor(
 		mockMeter,
@@ -371,11 +366,10 @@ func TestSnapshot_ConcurrentAfterError(t *testing.T) {
 		Level: slog.LevelError,
 	}))
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	monitor := NewPowerMonitor(
 		mockMeter,
@@ -474,11 +468,10 @@ func TestPowerMonitor_ConcurrentCollection(t *testing.T) {
 
 		fakeClock := testingclock.NewFakeClock(time.Now())
 
-		procs, containers := CreateTestResources()
+		tr := CreateTestResources()
 		resourceInformer := &MockResourceInformer{}
+		resourceInformer.SetExpectations(t, tr)
 		resourceInformer.On("Refresh").Return(nil)
-		resourceInformer.On("Processes").Return(procs, nil)
-		resourceInformer.On("Containers").Return(containers, nil)
 
 		monitor := NewPowerMonitor(
 			mockMeter,
@@ -495,7 +488,9 @@ func TestPowerMonitor_ConcurrentCollection(t *testing.T) {
 		// run in background
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go monitor.Run(ctx)
+		go func() {
+			_ = monitor.Run(ctx)
+		}()
 
 		// wait for monitor to startt
 		time.Sleep(10 * time.Millisecond)
@@ -577,11 +572,10 @@ func TestPowerMonitor_ConcurrentCollection(t *testing.T) {
 
 		fakeClock := testingclock.NewFakeClock(time.Now())
 
-		procs, containers := CreateTestResources()
+		tr := CreateTestResources()
 		resourceInformer := &MockResourceInformer{}
+		resourceInformer.SetExpectations(t, tr)
 		resourceInformer.On("Refresh").Return(nil)
-		resourceInformer.On("Processes").Return(procs, nil)
-		resourceInformer.On("Containers").Return(containers, nil)
 
 		monitor := NewPowerMonitor(
 			mockMeter,

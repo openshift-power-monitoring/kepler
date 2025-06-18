@@ -22,27 +22,32 @@ func (pm *PowerMonitor) firstProcessRead(snapshot *Snapshot) error {
 	return nil
 }
 
-func newProcess(proc *resource.Process, zones ZoneUsageMap) *Process {
+func newProcess(proc *resource.Process, zones NodeZoneUsageMap) *Process {
 	process := &Process{
 		PID:          proc.PID,
 		Comm:         proc.Comm,
 		Exe:          proc.Exe,
+		Type:         proc.Type,
 		CPUTotalTime: proc.CPUTotalTime,
 		Zones:        make(ZoneUsageMap, len(zones)),
 	}
 
 	// Initialize each zone with zero values
 	for zone := range zones {
-		process.Zones[zone] = &Usage{
-			Absolute: Energy(0),
-			Delta:    Energy(0),
-			Power:    Power(0),
+		process.Zones[zone] = Usage{
+			EnergyTotal: Energy(0),
+			Power:       Power(0),
 		}
 	}
 
 	// Add the container ID if available
 	if proc.Container != nil {
 		process.ContainerID = proc.Container.ID
+	}
+
+	// Add the VM ID if available
+	if proc.VirtualMachine != nil {
+		process.VirtualMachineID = proc.VirtualMachine.ID
 	}
 	return process
 }
@@ -57,28 +62,21 @@ func (pm *PowerMonitor) calculateProcessPower(prev, newSnapshot *Snapshot) error
 	}
 
 	zones := newSnapshot.Node.Zones
-	nodeCPUTimeDelta := procs.NodeCPUTimeDelta
+	nodeCPUTimeDelta := pm.resources.Node().ProcessTotalCPUTimeDelta
+	pm.logger.Debug("Calculating Process power",
+		"node.cpu.time", nodeCPUTimeDelta,
+		"running", len(running),
+	)
 
 	// Initialize process map
 	processMap := make(Processes, len(running))
 
 	for pid, proc := range running {
-		var process *Process
-		if prevProc, exists := prev.Processes[pid]; exists {
-			process = prevProc.Clone()
-			process.CPUTotalTime = proc.CPUTotalTime
-		} else {
-			process = newProcess(proc, zones)
-		}
+		process := newProcess(proc, zones)
 
 		// For each zone in the node, calculate process's share
-		for zone, usage := range zones {
-			if usage.Power == 0 || usage.Delta == 0 || nodeCPUTimeDelta == 0 {
-				process.Zones[zone] = &Usage{
-					Absolute: Energy(0),
-					Delta:    Energy(0),
-					Power:    Power(0),
-				}
+		for zone, nodeZoneUsage := range zones {
+			if nodeZoneUsage.ActivePower == 0 || nodeZoneUsage.activeEnergy == 0 || nodeCPUTimeDelta == 0 {
 				continue
 			}
 
@@ -90,27 +88,23 @@ func (pm *PowerMonitor) calculateProcessPower(prev, newSnapshot *Snapshot) error
 			// 2 ->  P1_t2   150   P1_t2 - P1_T1 = 50
 			//
 			//
-			cpuRatio := proc.CPUTimeDelta / nodeCPUTimeDelta
+			cpuTimeRatio := proc.CPUTimeDelta / nodeCPUTimeDelta
 
-			// Calculate process's share of this zone's power and energy
+			// Calculate energy  for this interval
+			activeEnergy := Energy(cpuTimeRatio * float64(nodeZoneUsage.activeEnergy))
 
-			energyDelta := Energy(cpuRatio * float64(usage.Delta))
-			process.Zones[zone] = &Usage{
-				Power: Power(cpuRatio * usage.Power.MicroWatts()),
-				Delta: energyDelta,
-			}
-
-			// If we have previous data for this process and zone, add to absolute energy
+			// Calculate absolute energy based on previous data
+			absoluteEnergy := activeEnergy
 			if prev, exists := prev.Processes[pid]; exists {
 				if prevUsage, hasZone := prev.Zones[zone]; hasZone {
-					process.Zones[zone].Absolute = prevUsage.Absolute + energyDelta
-				} else {
-					// TODO: unlikely; so add telemetry for this
-					process.Zones[zone].Absolute = process.Zones[zone].Delta
+					absoluteEnergy += prevUsage.EnergyTotal
 				}
-			} else {
-				// New process, starts with delta
-				process.Zones[zone].Absolute = process.Zones[zone].Delta
+			}
+
+			// Calculate process's share of this zone's power and energy
+			process.Zones[zone] = Usage{
+				Power:       Power(cpuTimeRatio * nodeZoneUsage.ActivePower.MicroWatts()),
+				EnergyTotal: absoluteEnergy,
 			}
 		}
 
@@ -119,6 +113,7 @@ func (pm *PowerMonitor) calculateProcessPower(prev, newSnapshot *Snapshot) error
 
 	// Update the snapshot
 	newSnapshot.Processes = processMap
+	pm.logger.Debug("snapshot updated for process", "process", len(newSnapshot.Processes))
 
 	return nil
 }

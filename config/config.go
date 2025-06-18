@@ -12,6 +12,7 @@ import (
 
 	"github.com/alecthomas/kingpin/v2"
 	"gopkg.in/yaml.v3"
+	"k8s.io/utils/ptr"
 )
 
 // Config represents the complete application configuration
@@ -33,7 +34,7 @@ type (
 	// Development mode settings; disabled by default
 	Dev struct {
 		FakeCpuMeter struct {
-			Enabled bool     `yaml:"enabled"`
+			Enabled *bool    `yaml:"enabled"`
 			Zones   []string `yaml:"zones"`
 		} `yaml:"fake-cpu-meter"`
 	}
@@ -46,14 +47,47 @@ type (
 		Staleness time.Duration `yaml:"staleness"` // Time after which calculated values are considered stale
 	}
 
+	// Exporter configuration
+	StdoutExporter struct {
+		Enabled *bool `yaml:"enabled"`
+	}
+
+	PrometheusExporter struct {
+		Enabled         *bool    `yaml:"enabled"`
+		DebugCollectors []string `yaml:"debugCollectors"`
+	}
+
+	Exporter struct {
+		Stdout     StdoutExporter     `yaml:"stdout"`
+		Prometheus PrometheusExporter `yaml:"prometheus"`
+	}
+
+	// Debug configuration
+	PprofDebug struct {
+		Enabled *bool `yaml:"enabled"`
+	}
+
+	Debug struct {
+		Pprof PprofDebug `yaml:"pprof"`
+	}
+
+	Kube struct {
+		Enabled *bool  `yaml:"enabled"`
+		Config  string `yaml:"config"`
+		Node    string `yaml:"nodeName"`
+	}
+
 	Config struct {
-		Log         Log     `yaml:"log"`
-		Host        Host    `yaml:"host"`
-		Monitor     Monitor `yaml:"monitor"`
-		Rapl        Rapl    `yaml:"rapl"`
-		Web         Web     `yaml:"web"`
-		EnablePprof bool    `yaml:"enable-pprof"`
-		Dev         Dev     `yaml:"dev"` // WARN: do not expose dev settings as flags
+		Log      Log      `yaml:"log"`
+		Host     Host     `yaml:"host"`
+		Monitor  Monitor  `yaml:"monitor"`
+		Rapl     Rapl     `yaml:"rapl"`
+		Exporter Exporter `yaml:"exporter"`
+		Web      Web      `yaml:"web"`
+		Debug    Debug    `yaml:"debug"`
+		Dev      Dev      `yaml:"dev"` // WARN: do not expose dev settings as flags
+
+		Kube Kube `yaml:"kube"`
 	}
 )
 
@@ -61,6 +95,7 @@ type SkipValidation int
 
 const (
 	SkipHostValidation SkipValidation = 1
+	SkipKubeValidation SkipValidation = 2
 )
 
 const (
@@ -72,10 +107,26 @@ const (
 	HostProcFSFlag = "host.procfs"
 
 	MonitorIntervalFlag = "monitor.interval"
+	MonitorStaleness    = "monitor.staleness" // not a flag
 
-	EnablePprofFlag = "enable.pprof"
+	// RAPL
+	RaplZones = "rapl.zones" // not a flag
+
+	pprofEnabledFlag = "debug.pprof"
 
 	WebConfigFlag = "web.config-file"
+
+	// Exporters
+	ExporterStdoutEnabledFlag = "exporter.stdout"
+
+	ExporterPrometheusEnabledFlag = "exporter.prometheus"
+	// NOTE: not a flag
+	ExporterPrometheusDebugCollectors = "exporter.prometheus.debug-collectors"
+
+	// kubernetes flags
+	KubernetesFlag   = "kube.enable"
+	KubeConfigFlag   = "kube.config"
+	KubeNodeNameFlag = "kube.node-name"
 
 // WARN:  dev settings shouldn't be exposed as flags as flags are intended for end users
 )
@@ -98,8 +149,26 @@ func DefaultConfig() *Config {
 			Interval:  5 * time.Second,
 			Staleness: 500 * time.Millisecond,
 		},
+		Exporter: Exporter{
+			Stdout: StdoutExporter{
+				Enabled: ptr.To(false),
+			},
+			Prometheus: PrometheusExporter{
+				Enabled:         ptr.To(true),
+				DebugCollectors: []string{"go"},
+			},
+		},
+		Debug: Debug{
+			Pprof: PprofDebug{
+				Enabled: ptr.To(false),
+			},
+		},
+		Kube: Kube{
+			Enabled: ptr.To(false),
+		},
 	}
 
+	cfg.Dev.FakeCpuMeter.Enabled = ptr.To(false)
 	return cfg
 }
 
@@ -130,9 +199,17 @@ func FromFile(filePath string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open config file: %w", err)
 	}
-	defer file.Close()
+	var errRet error
+	defer func() {
+		err = file.Close()
+		if err != nil && errRet == nil {
+			errRet = err
+		}
+	}()
 
-	return Load(file)
+	cfg, errRet := Load(file)
+
+	return cfg, errRet
 }
 
 type ConfigUpdaterFn func(*Config) error
@@ -167,8 +244,17 @@ func RegisterFlags(app *kingpin.Application) ConfigUpdaterFn {
 	monitorInterval := app.Flag(MonitorIntervalFlag,
 		"Interval for monitoring resources (processes, container, vm, etc...); 0 to disable").Default("5s").Duration()
 
-	enablePprof := app.Flag(EnablePprofFlag, "Enable pprof").Default("false").Bool()
+	enablePprof := app.Flag(pprofEnabledFlag, "Enable pprof debug endpoints").Default("false").Bool()
 	webConfig := app.Flag(WebConfigFlag, "Web config file path").Default("").String()
+
+	// exporters
+	stdoutExporterEnabled := app.Flag(ExporterStdoutEnabledFlag, "Enable stdout exporter").Default("false").Bool()
+
+	prometheusExporterEnabled := app.Flag(ExporterPrometheusEnabledFlag, "Enable Prometheus exporter").Default("true").Bool()
+
+	kubernetes := app.Flag(KubernetesFlag, "Monitor kubernetes").Default("false").Bool()
+	kubeconfig := app.Flag(KubeConfigFlag, "Path to a kubeconfig. Only required if out-of-cluster.").ExistingFile()
+	nodeName := app.Flag(KubeNodeNameFlag, "Name of kubernetes node on which kepler is running.").String()
 
 	return func(cfg *Config) error {
 		// Logging settings
@@ -193,12 +279,32 @@ func RegisterFlags(app *kingpin.Application) ConfigUpdaterFn {
 			cfg.Monitor.Interval = *monitorInterval
 		}
 
-		if flagsSet[EnablePprofFlag] {
-			cfg.EnablePprof = *enablePprof
+		if flagsSet[pprofEnabledFlag] {
+			cfg.Debug.Pprof.Enabled = enablePprof
 		}
 
 		if flagsSet[WebConfigFlag] {
 			cfg.Web.Config = *webConfig
+		}
+
+		if flagsSet[ExporterStdoutEnabledFlag] {
+			cfg.Exporter.Stdout.Enabled = stdoutExporterEnabled
+		}
+
+		if flagsSet[ExporterPrometheusEnabledFlag] {
+			cfg.Exporter.Prometheus.Enabled = prometheusExporterEnabled
+		}
+
+		if flagsSet[KubernetesFlag] {
+			cfg.Kube.Enabled = kubernetes
+		}
+
+		if flagsSet[KubeConfigFlag] {
+			cfg.Kube.Config = *kubeconfig
+		}
+
+		if flagsSet[KubeNodeNameFlag] {
+			cfg.Kube.Node = *nodeName
 		}
 
 		cfg.sanitize()
@@ -216,6 +322,11 @@ func (c *Config) sanitize() {
 	for i := range c.Rapl.Zones {
 		c.Rapl.Zones[i] = strings.TrimSpace(c.Rapl.Zones[i])
 	}
+
+	for i := range c.Exporter.Prometheus.DebugCollectors {
+		c.Exporter.Prometheus.DebugCollectors[i] = strings.TrimSpace(c.Exporter.Prometheus.DebugCollectors[i])
+	}
+	c.Kube.Config = strings.TrimSpace(c.Kube.Config)
 }
 
 // Validate checks for configuration errors
@@ -272,6 +383,18 @@ func (c *Config) Validate(skips ...SkipValidation) error {
 		}
 		if c.Monitor.Staleness < 0 {
 			errs = append(errs, fmt.Sprintf("invalid monitor staleness: %s can't be negative", c.Monitor.Staleness))
+		}
+	}
+	{ // Kubernetes
+		if ptr.Deref(c.Kube.Enabled, false) {
+			if c.Kube.Config != "" {
+				if err := canReadFile(c.Kube.Config); err != nil {
+					errs = append(errs, fmt.Sprintf("unreadable kubeconfig: %s", c.Kube.Config))
+				}
+			}
+			if c.Kube.Node == "" {
+				errs = append(errs, fmt.Sprintf("%s not supplied but %s set to true", KubeNodeNameFlag, KubernetesFlag))
+			}
 		}
 	}
 
@@ -340,8 +463,13 @@ func (c *Config) manualString() string {
 		{HostSysFSFlag, c.Host.SysFS},
 		{HostProcFSFlag, c.Host.ProcFS},
 		{MonitorIntervalFlag, c.Monitor.Interval.String()},
-		{"monitor.staleness", c.Monitor.Staleness.String()},
-		{"rapl.zones", strings.Join(c.Rapl.Zones, ", ")},
+		{MonitorStaleness, c.Monitor.Staleness.String()},
+		{RaplZones, strings.Join(c.Rapl.Zones, ", ")},
+		{ExporterStdoutEnabledFlag, fmt.Sprintf("%v", c.Exporter.Stdout.Enabled)},
+		{ExporterPrometheusEnabledFlag, fmt.Sprintf("%v", c.Exporter.Prometheus.Enabled)},
+		{ExporterPrometheusDebugCollectors, strings.Join(c.Exporter.Prometheus.DebugCollectors, ", ")},
+		{pprofEnabledFlag, fmt.Sprintf("%v", c.Debug.Pprof.Enabled)},
+		{KubeConfigFlag, fmt.Sprintf("%v", c.Kube.Config)},
 	}
 	sb := strings.Builder{}
 

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,16 +32,15 @@ func musT[T any](t T, err error) T {
 // TestPowerCollectorConcurrency tests the thread safety of PowerCollector
 // when multiple goroutines call its methods concurrently.
 func TestPowerCollectorConcurrency(t *testing.T) {
-	procs, containers := monitor.CreateTestResources()
+	tr := monitor.CreateTestResources()
 	ri := &monitor.MockResourceInformer{}
+	ri.SetExpectations(t, tr)
 	ri.On("Refresh").Return(nil)
-	ri.On("Processes").Return(procs)
-	ri.On("Containers").Return(containers)
 	fakeMonitor := monitor.NewPowerMonitor(
 		musT(device.NewFakeCPUMeter(nil)),
 		monitor.WithResourceInformer(ri),
 	)
-	collector := NewPowerCollector(fakeMonitor, newLogger())
+	collector := NewPowerCollector(fakeMonitor, "test-node", newLogger())
 
 	assert.NoError(t, fakeMonitor.Init())
 
@@ -105,10 +105,9 @@ func TestPowerCollectorConcurrency(t *testing.T) {
 func TestPowerCollectorWithRegistry(t *testing.T) {
 	mockMonitor := NewMockPowerMonitor()
 
-	packageZone := device.NewMockRaplZone("package", 0, "/sys/class/powercap/intel-rapl/intel-rapl:0", 1000)
+	package0Zone := device.NewMockRaplZone("package", 0, "/sys/class/powercap/intel-rapl/intel-rapl:0", 1000)
+	package1Zone := device.NewMockRaplZone("package", 1, "/sys/class/powercap/intel-rapl/intel-rapl:1", 1000)
 	dramZone := device.NewMockRaplZone("dram", 0, "/sys/class/powercap/intel-rapl/intel-rapl:0:1", 1000)
-
-	mockMonitor.On("ZoneNames").Return([]string{"package", "dram"})
 
 	nodePkgAbs := 12300 * device.Joule
 	nodePkgDelta := 123 * device.Joule
@@ -120,16 +119,32 @@ func TestPowerCollectorWithRegistry(t *testing.T) {
 
 	// Create test node Snapshot
 	testNodeData := monitor.Node{
-		Zones: monitor.ZoneUsageMap{
-			packageZone: {
-				Absolute: nodePkgAbs,
-				Delta:    nodePkgDelta,
-				Power:    nodePkgPower,
+		Timestamp:  time.Now(),
+		UsageRatio: 0.5,
+		Zones: monitor.NodeZoneUsageMap{
+			package0Zone: monitor.NodeUsage{
+				EnergyTotal:       nodePkgAbs,
+				ActiveEnergyTotal: nodePkgDelta / 2,
+				IdleEnergyTotal:   nodePkgDelta / 2,
+				Power:             nodePkgPower,
+				ActivePower:       nodePkgPower / 2,
+				IdlePower:         nodePkgPower / 2,
 			},
-			dramZone: {
-				Absolute: nodeDramAbs,
-				Delta:    nodeDramDelta,
-				Power:    nodeDramPower,
+			dramZone: monitor.NodeUsage{
+				EnergyTotal:       nodeDramAbs,
+				ActiveEnergyTotal: nodeDramDelta / 2,
+				IdleEnergyTotal:   nodeDramDelta / 2,
+				Power:             nodeDramPower,
+				ActivePower:       nodeDramPower / 2,
+				IdlePower:         nodeDramPower / 2,
+			},
+			package1Zone: monitor.NodeUsage{
+				EnergyTotal:       nodePkgAbs,
+				ActiveEnergyTotal: nodePkgDelta / 2,
+				IdleEnergyTotal:   nodePkgDelta / 2,
+				Power:             nodePkgPower,
+				ActivePower:       nodePkgPower / 2,
+				IdlePower:         nodePkgPower / 2,
 			},
 		},
 	}
@@ -140,7 +155,7 @@ func TestPowerCollectorWithRegistry(t *testing.T) {
 	}
 	mockMonitor.On("Snapshot").Return(snapshot, nil)
 
-	collector := NewPowerCollector(mockMonitor, newLogger())
+	collector := NewPowerCollector(mockMonitor, "test-node", newLogger())
 	mockMonitor.TriggerUpdate()
 	time.Sleep(10 * time.Millisecond)
 
@@ -160,36 +175,47 @@ func TestPowerCollectorWithRegistry(t *testing.T) {
 				defer wg.Done()
 				metrics, err := registry.Gather()
 				assert.NoError(t, err, "Gather should not return an error")
-				assert.NotEmpty(t, metrics, "Metrics should not be empty")
-
-				// Verify the metrics
-				foundPackageJoules := false
-				foundDramJoules := false
-				foundPackageWatts := false
-				foundDramWatts := false
+				assert.Len(t, metrics, 7, "Expected 7 node metric families") // Updated from 5 to 7 (added separate active/idle metrics)
 
 				for _, mf := range metrics {
 					switch mf.GetName() {
-					case "kepler_node_package_joules_total":
-						foundPackageJoules = true
-						assertMetricValue(t, mf, "package", packageZone.Path(), nodePkgAbs.Joules())
-					case "kepler_node_dram_joules_total":
-						foundDramJoules = true
-						assertMetricValue(t, mf, "dram", dramZone.Path(), nodeDramAbs.Joules())
-					case "kepler_node_package_watts":
-						foundPackageWatts = true
-						assertMetricValue(t, mf, "package", packageZone.Path(), nodePkgPower.Watts())
-					case "kepler_node_dram_watts":
-						foundDramWatts = true
-						assertMetricValue(t, mf, "dram", dramZone.Path(), nodeDramPower.Watts())
+					case "kepler_node_cpu_joules_total":
+						// Main joules metric - no mode label
+						assertMainMetricValue(t, mf, "package-0", nodePkgAbs.Joules())
+						assertMainMetricValue(t, mf, "package-1", nodePkgAbs.Joules())
+						assertMainMetricValue(t, mf, "dram-0", nodeDramAbs.Joules())
+
+					case "kepler_node_cpu_watts":
+						// Main watts metric - no mode label
+						assertMainMetricValue(t, mf, "package-0", nodePkgPower.Watts())
+						assertMainMetricValue(t, mf, "dram-0", nodeDramPower.Watts())
+
+					case "kepler_node_cpu_active_watts":
+						// Active watts metric - no mode label
+						assertMainMetricValue(t, mf, "package-0", (nodePkgPower / 2).Watts())
+						assertMainMetricValue(t, mf, "dram-0", (nodeDramPower / 2).Watts())
+
+					case "kepler_node_cpu_idle_watts":
+						// Idle watts metric - no mode label
+						assertMainMetricValue(t, mf, "package-0", (nodePkgPower / 2).Watts())
+						assertMainMetricValue(t, mf, "dram-0", (nodeDramPower / 2).Watts())
+
+					case "kepler_node_cpu_active_joules_total":
+						// Active joules metric - no mode label
+						assertMainMetricValue(t, mf, "package-0", (nodePkgDelta / 2).Joules())
+						assertMainMetricValue(t, mf, "dram-0", (nodeDramDelta / 2).Joules())
+
+					case "kepler_node_cpu_idle_joules_total":
+						// Idle joules metric - no mode label
+						assertMainMetricValue(t, mf, "package-0", (nodePkgDelta / 2).Joules())
+						assertMainMetricValue(t, mf, "dram-0", (nodeDramDelta / 2).Joules())
+
+					case "kepler_node_cpu_usage_ratio":
+						// Usage ratio metric
+						assert.Len(t, mf.GetMetric(), 1, "Expected single usage ratio metric")
+						assert.Equal(t, 0.5, mf.GetMetric()[0].GetGauge().GetValue())
 					}
 				}
-
-				// Ensure all metrics were found
-				assert.True(t, foundPackageJoules, "package_joules_total metric not found")
-				assert.True(t, foundDramJoules, "dram_joules_total metric not found")
-				assert.True(t, foundPackageWatts, "package_watts metric not found")
-				assert.True(t, foundDramWatts, "dram_watts metric not found")
 			}()
 		}
 
@@ -208,7 +234,6 @@ func TestUpdateDuringCollection(t *testing.T) {
 	allowCollectCh := make(chan struct{})
 
 	packageZone := device.NewMockRaplZone("package", 0, "/sys/class/powercap/intel-rapl/intel-rapl:0", 1000)
-	mockMonitor.On("ZoneNames").Return([]string{"package"})
 
 	mockMonitor.On("Snapshot").Run(func(args mock.Arguments) {
 		// NOTE: this waits for allow collect to close
@@ -220,17 +245,23 @@ func TestUpdateDuringCollection(t *testing.T) {
 		&monitor.Snapshot{
 			Timestamp: time.Now(),
 			Node: &monitor.Node{
-				Zones: monitor.ZoneUsageMap{
-					packageZone: {
-						Absolute: 100 * device.Joule,
-						Delta:    10 * device.Joule,
-						Power:    5 * device.Watt,
+				Timestamp:  time.Now(),
+				UsageRatio: 0.5,
+				Zones: monitor.NodeZoneUsageMap{
+					packageZone: monitor.NodeUsage{
+						EnergyTotal:       100 * device.Joule,
+						ActiveEnergyTotal: 5 * device.Joule,
+						IdleEnergyTotal:   5 * device.Joule,
+
+						Power:       5 * device.Watt,
+						ActivePower: 2.5 * device.Watt,
+						IdlePower:   2.5 * device.Watt,
 					},
 				},
 			},
 		}, nil)
 
-	collector := NewPowerCollector(mockMonitor, newLogger())
+	collector := NewPowerCollector(mockMonitor, "test-node", newLogger())
 	mockMonitor.TriggerUpdate() // collector should now start building descriptors
 	time.Sleep(10 * time.Millisecond)
 
@@ -291,18 +322,17 @@ func TestUpdateDuringCollection(t *testing.T) {
 func TestConcurrentRegistration(t *testing.T) {
 	const numRegistries = 5
 
-	procs, containers := monitor.CreateTestResources()
+	tr := monitor.CreateTestResources()
 	ri := &monitor.MockResourceInformer{}
+	ri.SetExpectations(t, tr)
 	ri.On("Refresh").Return(nil)
-	ri.On("Processes").Return(procs)
-	ri.On("Containers").Return(containers)
 
 	fakeMonitor := monitor.NewPowerMonitor(
 		musT(device.NewFakeCPUMeter(nil)),
 		monitor.WithResourceInformer(ri),
 	)
 
-	collector := NewPowerCollector(fakeMonitor, newLogger())
+	collector := NewPowerCollector(fakeMonitor, "test-node", newLogger())
 	assert.NoError(t, fakeMonitor.Init())
 
 	go func() {
@@ -349,16 +379,16 @@ func TestConcurrentRegistration(t *testing.T) {
 
 // TestFastCollectAndDescribe tests extremely rapid consecutive calls
 func TestFastCollectAndDescribe(t *testing.T) {
-	procs, containers := monitor.CreateTestResources()
+	tr := monitor.CreateTestResources()
 	ri := &monitor.MockResourceInformer{}
+	ri.SetExpectations(t, tr)
 	ri.On("Refresh").Return(nil)
-	ri.On("Processes").Return(procs)
-	ri.On("Containers").Return(containers)
+
 	fakeMonitor := monitor.NewPowerMonitor(
 		musT(device.NewFakeCPUMeter(nil)),
 		monitor.WithResourceInformer(ri),
 	)
-	collector := NewPowerCollector(fakeMonitor, newLogger())
+	collector := NewPowerCollector(fakeMonitor, "test-node", newLogger())
 
 	assert.NoError(t, fakeMonitor.Init())
 
@@ -416,23 +446,37 @@ func TestFastCollectAndDescribe(t *testing.T) {
 	})
 }
 
-// Helper function to assert metric values
-func assertMetricValue(t *testing.T, mf *dto.MetricFamily, zoneName, zonePath string, expected float64) {
+// Helper function to assert main metric values (without mode label)
+func assertMainMetricValue(t *testing.T, mf *dto.MetricFamily, zoneName string, expected float64) {
+	t.Helper()
+
+	metricName := mf.GetName()
 	for _, m := range mf.Metric {
+		zoneMatch := false
+
+		// Check for zone label only (no mode label expected)
 		for _, label := range m.Label {
-			if label.GetName() == "path" && label.GetValue() == zonePath {
-				var value float64
-				if mf.GetName() == "kepler_node_"+zoneName+"_joules_total" {
-					value = m.Counter.GetValue()
-				} else if mf.GetName() == "kepler_node_"+zoneName+"_watts" {
-					value = m.Gauge.GetValue()
-				}
-				assert.Equal(t, expected, value, "Unexpected value for %s, path %s", mf.GetName(), zonePath)
-				return
+			if label.GetName() == "zone" && label.GetValue() == zoneName {
+				zoneMatch = true
+				break
 			}
 		}
+
+		if !zoneMatch {
+			continue
+		}
+
+		var value float64
+		if strings.HasSuffix(metricName, "_joules_total") {
+			value = m.Counter.GetValue()
+		} else if strings.HasSuffix(metricName, "_watts") {
+			value = m.Gauge.GetValue()
+		}
+		assert.Equal(t, expected, value, "Unexpected value for %s zone: %s", metricName, zoneName)
+		return
 	}
-	t.Errorf("Metric for zone %s with path %s not found", zoneName, zonePath)
+
+	t.Errorf("Main metric for zone %s not found", zoneName)
 }
 
 func callDescribe(c prometheus.Collector, wg *sync.WaitGroup) {

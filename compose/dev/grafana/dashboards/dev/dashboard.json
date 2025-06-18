@@ -19,7 +19,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "id": 4,
+  "id": 5,
   "links": [],
   "panels": [
     {
@@ -523,9 +523,9 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "rate(kepler_node_${zones}_joules_total{job=\"${job}\"}[20s])",
+          "expr": "rate(kepler_node_cpu_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s])",
           "instant": false,
-          "legendFormat": "Kepler Reboot Node (${zones})",
+          "legendFormat": "Kepler Reboot Node (${zone}) (ΔJ/s)",
           "range": true,
           "refId": "A"
         },
@@ -535,9 +535,9 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "kepler_node_${zones}_watts{job=\"${job}\"}",
+          "expr": "kepler_node_cpu_watts{job=\"${job}\", zone=\"${zone}\"}\n",
           "instant": false,
-          "legendFormat": "Kepler Reboot Node (${zones}) Watts",
+          "legendFormat": "Kepler Reboot Node (${zone}) Watts",
           "range": true,
           "refId": "B"
         },
@@ -547,9 +547,9 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "sum(rate(node_rapl_${zones}_joules_total[20s]))",
+          "expr": "sum(rate(node_rapl_${zone_name}_joules_total[20s]))",
           "instant": false,
-          "legendFormat": "Node Exporter (${zones})",
+          "legendFormat": "Node Exporter (${zone})",
           "range": true,
           "refId": "C"
         },
@@ -559,9 +559,9 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "sum(rate(kepler_node_${zones}_joules_total{job=\"kepler-latest\"}[20s]))",
+          "expr": "sum(rate(kepler_node_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))",
           "instant": false,
-          "legendFormat": "Kepler (${zones})",
+          "legendFormat": "Kepler - OLD (${zone})",
           "range": true,
           "refId": "D"
         }
@@ -574,7 +574,7 @@
         "type": "prometheus",
         "uid": "PDE6745920139CE56"
       },
-      "description": "Difference between Node exporter and Kepler Reboot energy measurements in joules. Values close to zero indicate good alignment between the metrics.",
+      "description": "Difference between Node exporter and Kepler Reboot energy measurements in watts. Values close to zero indicate good alignment between the metrics.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -585,7 +585,7 @@
             "axisBorderShow": false,
             "axisCenteredZero": true,
             "axisColorMode": "text",
-            "axisLabel": "Joules Delta",
+            "axisLabel": "Watts Delta",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -610,7 +610,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "dashed"
+              "mode": "area"
             }
           },
           "mappings": [],
@@ -623,31 +623,43 @@
                 "value": null
               },
               {
-                "color": "dark-green",
+                "color": "semi-dark-red",
+                "value": -999999999
+              },
+              {
+                "color": "semi-dark-red",
+                "value": -1
+              },
+              {
+                "color": "dark-orange",
                 "value": -0.5
               },
               {
-                "color": "super-light-green",
+                "color": "dark-yellow",
                 "value": -0.25
               },
               {
-                "color": "green",
+                "color": "semi-dark-green",
                 "value": -0.1
               },
               {
-                "color": "light-green",
+                "color": "super-light-green",
                 "value": 0
               },
               {
-                "color": "semi-dark-yellow",
+                "color": "semi-dark-green",
                 "value": 0.1
+              },
+              {
+                "color": "dark-yellow",
+                "value": 0.25
               },
               {
                 "color": "dark-orange",
                 "value": 0.5
               },
               {
-                "color": "dark-red",
+                "color": "semi-dark-red",
                 "value": 1
               }
             ]
@@ -662,7 +674,7 @@
         "x": 0,
         "y": 23
       },
-      "id": 99,
+      "id": 172,
       "options": {
         "legend": {
           "calcs": [
@@ -689,14 +701,14 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(rate(node_rapl_${zones}_joules_total[20s])) \n- on() sum(rate(kepler_node_${zones}_joules_total{job=\"${job}\"}[20s]))\n",
+          "expr": "sum(rate(node_rapl_${zone_name}_joules_total[20s])) \n- sum(rate(kepler_node_cpu_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s]))\n",
           "instant": false,
-          "legendFormat": "Delta (${zones})",
+          "legendFormat": "Δ ${zone} J/s",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Node Exporter vs Kepler Reboot Measurement Delta (Joules)",
+      "title": "Node Exporter vs Kepler Reboot (Δ J/s)",
       "type": "timeseries"
     },
     {
@@ -740,7 +752,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "dashed"
+              "mode": "area"
             }
           },
           "mappings": [],
@@ -753,31 +765,43 @@
                 "value": null
               },
               {
-                "color": "dark-green",
+                "color": "semi-dark-red",
+                "value": -9999
+              },
+              {
+                "color": "semi-dark-red",
+                "value": -1
+              },
+              {
+                "color": "dark-orange",
                 "value": -0.5
               },
               {
-                "color": "super-light-green",
+                "color": "dark-yellow",
                 "value": -0.25
               },
               {
-                "color": "green",
+                "color": "semi-dark-green",
                 "value": -0.1
               },
               {
-                "color": "light-green",
+                "color": "super-light-green",
                 "value": 0
               },
               {
-                "color": "semi-dark-yellow",
+                "color": "semi-dark-green",
                 "value": 0.1
+              },
+              {
+                "color": "dark-yellow",
+                "value": 0.25
               },
               {
                 "color": "dark-orange",
                 "value": 0.5
               },
               {
-                "color": "dark-red",
+                "color": "semi-dark-red",
                 "value": 1
               }
             ]
@@ -819,9 +843,9 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(rate(node_rapl_${zones}_joules_total[20s])) \n- on() sum(kepler_node_${zones}_watts)\n",
+          "expr": "sum(rate(node_rapl_${zone_name}_joules_total[20s])) \n- sum(kepler_node_cpu_watts{job=\"${job}\", zone=\"${zone}\"})",
           "instant": false,
-          "legendFormat": "Delta (${zones})",
+          "legendFormat": "Δ ${zone} J/s - W",
           "range": true,
           "refId": "A"
         }
@@ -888,7 +912,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 10,
+        "h": 12,
         "w": 24,
         "x": 0,
         "y": 31
@@ -919,9 +943,9 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "rate(kepler_node_${zones}_joules_total{job=\"${job}\"}[20s])",
+          "expr": "rate(kepler_node_cpu_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s])",
           "instant": false,
-          "legendFormat": "Kepler Reboot (${zones})",
+          "legendFormat": "Kepler Reboot CPU Total (${zone})",
           "range": true,
           "refId": "A"
         },
@@ -931,10 +955,10 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "sum(rate(node_rapl_${zones}_joules_total[20s]))",
+          "expr": "rate(kepler_node_cpu_idle_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s])",
           "hide": false,
           "instant": false,
-          "legendFormat": "Node Exporter (${zones})",
+          "legendFormat": "Kepler Reboot CPU Idle (${zone})",
           "range": true,
           "refId": "B"
         },
@@ -944,15 +968,41 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "sum(rate(kepler_node_${zones}_joules_total{job=\"kepler-latest\"}[20s]))",
+          "expr": "rate(kepler_node_cpu_active_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s])",
           "hide": false,
           "instant": false,
-          "legendFormat": "Kepler (${zones})",
+          "legendFormat": "Kepler Reboot CPU Active (${zone})",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PDE6745920139CE56"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(node_rapl_${zone_name}_joules_total[20s]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "Node Exporter (${zone})",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PDE6745920139CE56"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(kepler_node_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "Kepler - OLD (${zone})",
+          "range": true,
+          "refId": "E"
         }
       ],
-      "title": "Node Energy Measurement Comparison",
+      "title": "Node Energy Comparison (J/s)",
       "type": "timeseries"
     },
     {
@@ -961,7 +1011,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 43
       },
       "id": 102,
       "panels": [],
@@ -978,7 +1028,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 44
       },
       "id": 157,
       "options": {
@@ -1007,12 +1057,12 @@
           "mappings": [
             {
               "options": {
-                "from": -1e-10,
+                "from": -1E-10,
                 "result": {
                   "index": 0,
                   "text": "0 W"
                 },
-                "to": 1e-10
+                "to": 1E-10
               },
               "type": "range"
             },
@@ -1096,7 +1146,7 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "abs(\n  sum(kepler_node_${zones}_watts{job=\"${job}\"}) \n  - \n  sum(kepler_process_${zones}_watts{job=\"${job}\"})\n)",
+          "expr": "abs(\n  sum(kepler_node_cpu_active_watts{job=\"${job}\", zone=\"${zone}\"}) \n  - \n  sum(kepler_process_cpu_watts{job=\"${job}\", zone=\"${zone}\"})\n)",
           "instant": false,
           "legendFormat": "Kepler Reboot Attribution Gap - Watts",
           "range": true,
@@ -1108,9 +1158,9 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "abs(\n  sum(rate(kepler_node_${zones}_joules_total{job=\"${job}\"}[20s]))\n  - \n  sum(rate(kepler_process_${zones}_joules_total{job=\"${job}\"}[20s]))\n)",
+          "expr": "abs(\n  sum(rate(kepler_node_cpu_active_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s]))\n  - \n  sum(rate(kepler_process_cpu_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s]))\n)",
           "instant": false,
-          "legendFormat": "Kepler Reboot Attribution Gap - Joules",
+          "legendFormat": "Kepler Reboot Attribution Gap - ΔJ/s",
           "range": true,
           "refId": "B"
         },
@@ -1120,7 +1170,7 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "abs(\n  sum(rate(kepler_node_${zones}_joules_total{job=\"kepler-latest\"}[20s]))\n  - \n  sum(rate(kepler_process_${zones}_joules_total{job=\"kepler-latest\"}[20s]))\n)",
+          "expr": "abs(\n  sum(rate(kepler_node_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))\n  - \n  sum(rate(kepler_process_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))\n)",
           "instant": false,
           "legendFormat": "Kepler Attribution Gap",
           "range": true,
@@ -1171,7 +1221,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "dashed"
+              "mode": "area"
             }
           },
           "mappings": [],
@@ -1184,27 +1234,39 @@
                 "value": null
               },
               {
-                "color": "dark-green",
-                "value": -0.5
-              },
-              {
-                "color": "super-light-green",
-                "value": -0.25
-              },
-              {
-                "color": "green",
-                "value": -0.1
-              },
-              {
-                "color": "light-green",
-                "value": 0
+                "color": "dark-red",
+                "value": -9999
               },
               {
                 "color": "#EAB839",
+                "value": -1
+              },
+              {
+                "color": "dark-orange",
+                "value": -0.5
+              },
+              {
+                "color": "dark-yellow",
+                "value": -0.25
+              },
+              {
+                "color": "dark-green",
+                "value": -0.1
+              },
+              {
+                "color": "super-light-green",
+                "value": 0
+              },
+              {
+                "color": "dark-green",
                 "value": 0.1
               },
               {
-                "color": "semi-dark-red",
+                "color": "dark-yellow",
+                "value": 0.25
+              },
+              {
+                "color": "dark-orange",
                 "value": 0.5
               },
               {
@@ -1215,7 +1277,23 @@
           },
           "unit": "watt"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Kepler Reboot - Node-Process Gap (W)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "super-light-green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 9,
@@ -1250,9 +1328,9 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(rate(kepler_node_${zones}_joules_total{job=\"${job}\"}[20s])) - on() sum(rate(kepler_process_${zones}_joules_total{job=\"${job}\"}[20s]))",
+          "expr": "sum(rate(kepler_node_cpu_active_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s]))\n- \nsum(rate(kepler_process_cpu_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s]))",
           "instant": false,
-          "legendFormat": "Kepler Reboot - Node-Process Gap (Joules)",
+          "legendFormat": "Kepler Reboot: Node - Process (J/s)",
           "range": true,
           "refId": "A"
         },
@@ -1262,10 +1340,10 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "sum(kepler_node_${zones}_watts{job=\"${job}\"}) - on() sum(kepler_process_${zones}_watts{job=\"${job}\"})",
+          "expr": "sum(kepler_node_cpu_active_watts{job=\"${job}\", zone=\"${zone}\"}) \n- \nsum(kepler_process_cpu_watts{job=\"${job}\", zone=\"${zone}\"})",
           "hide": false,
           "instant": false,
-          "legendFormat": "Kepler Reboot - Node-Process Gap (Watts)",
+          "legendFormat": "Kepler Reboot: Node - Process (W)",
           "range": true,
           "refId": "B"
         },
@@ -1275,15 +1353,15 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "sum(rate(kepler_node_${zones}_joules_total{job=\"kepler-latest\"}[20s])) - sum(rate(kepler_process_${zones}_joules_total{job=\"kepler-latest\"}[20s]))",
+          "expr": "sum(rate(kepler_node_${zone_name}_joules_total{job=\"kepler-old\"}[20s])) \n- \nsum(rate(kepler_process_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "Kepler - Node-Process Gap",
+          "legendFormat": "Kepler OLD: Node - Process (J/s)",
           "range": true,
           "refId": "C"
         }
       ],
-      "title": "Node-Process Energy Attribution Gap",
+      "title": "Node - Process Energy Attribution Gap",
       "type": "timeseries"
     },
     {
@@ -1371,7 +1449,68 @@
           },
           "unit": "watt"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Kepler Reboot - 2113657 (Watts)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "super-light-green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Kepler Reboot - 2113657 (Joules)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "dark-green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Kepler - 2113657 (Joules)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Kepler OLD - 2113657 (Joules)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 10,
@@ -1406,9 +1545,9 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(rate(kepler_process_${zones}_joules_total{pid=\"$pid\",job=\"kepler-latest\"}[20s]))",
+          "expr": "sum(rate(kepler_process_${zone_name}_joules_total{pid=\"$pid\",job=\"kepler-old\"}[20s]))",
           "instant": false,
-          "legendFormat": "Kepler - ${pid} (Joules)",
+          "legendFormat": "Kepler OLD - ${pid} (Joules)",
           "range": true,
           "refId": "A"
         },
@@ -1418,7 +1557,7 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "kepler_process_${zones}_watts{pid=\"$pid\",job=\"$job\"}",
+          "expr": "kepler_process_cpu_watts{pid=\"$pid\",job=\"$job\", zone=\"${zone}\"}",
           "hide": false,
           "instant": false,
           "legendFormat": "Kepler Reboot - ${pid} (Watts)",
@@ -1431,7 +1570,7 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "sum(rate(kepler_process_${zones}_joules_total{pid=\"$pid\",job=\"$job\"}[20s]))",
+          "expr": "sum(rate(kepler_process_cpu_joules_total{pid=\"$pid\",job=\"$job\", zone=\"${zone}\"}[20s]))",
           "hide": false,
           "instant": false,
           "legendFormat": "Kepler Reboot - ${pid} (Joules)",
@@ -1561,7 +1700,7 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "abs(\n  sum(kepler_process_${zones}_watts{job=\"${job}\",container_id!=\"\"}) \n  - \n  sum(kepler_container_${zones}_watts{job=\"${job}\"})\n)",
+          "expr": "abs(\n  sum(kepler_process_cpu_watts{job=\"${job}\",container_id!=\"\", zone=\"${zone}\"}) \n  - \n  sum(kepler_container_cpu_watts{job=\"${job}\", zone=\"${zone}\"})\n)",
           "instant": false,
           "legendFormat": "Kepler Reboot Attribution Gap - Watts",
           "range": true,
@@ -1573,7 +1712,7 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "abs(\n  sum(rate(kepler_process_${zones}_joules_total{job=\"${job}\",container_id!=\"\"}[20s]))\n  - \n  sum(rate(kepler_container_${zones}_joules_total{job=\"${job}\"}[20s]))\n)",
+          "expr": "abs(\n  sum(rate(kepler_process_cpu_joules_total{job=\"${job}\",container_id!=\"\", zone=\"${zone}\"}[20s]))\n  - \n  sum(rate(kepler_container_cpu_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s]))\n)",
           "instant": false,
           "legendFormat": "Kepler Reboot Attribution Gap - Joules",
           "range": true,
@@ -1585,7 +1724,7 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "abs(\n  sum(rate(kepler_process_${zones}_joules_total{job=\"kepler-latest\"}[20s]))\n  - \n  sum(rate(kepler_container_${zones}_joules_total{job=\"kepler-latest\"}[20s]))\n)",
+          "expr": "abs(\n  sum(rate(kepler_process_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))\n  - \n  sum(rate(kepler_container_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))\n)",
           "instant": false,
           "legendFormat": "Kepler Attribution Gap",
           "range": true,
@@ -1636,7 +1775,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "dashed"
+              "mode": "area"
             }
           },
           "mappings": [],
@@ -1649,31 +1788,43 @@
                 "value": null
               },
               {
-                "color": "semi-dark-green",
+                "color": "semi-dark-red",
+                "value": -999999
+              },
+              {
+                "color": "semi-dark-red",
+                "value": -1
+              },
+              {
+                "color": "semi-dark-orange",
                 "value": -0.5
               },
               {
-                "color": "super-light-green",
+                "color": "semi-dark-yellow",
                 "value": -0.25
               },
               {
-                "color": "light-green",
+                "color": "semi-dark-green",
                 "value": -0.1
               },
               {
-                "color": "green",
+                "color": "super-light-green",
                 "value": 0
               },
               {
-                "color": "#EAB839",
+                "color": "semi-dark-green",
                 "value": 0.1
               },
               {
-                "color": "light-red",
+                "color": "semi-dark-yellow",
+                "value": 0.25
+              },
+              {
+                "color": "semi-dark-orange",
                 "value": 0.5
               },
               {
-                "color": "dark-red",
+                "color": "semi-dark-red",
                 "value": 1
               }
             ]
@@ -1715,9 +1866,9 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(rate(kepler_process_${zones}_joules_total{job=\"${job}\",container_id!=\"\"}[20s])) - on() sum(rate(kepler_container_${zones}_joules_total{job=\"${job}\"}[20s]))",
+          "expr": "sum(rate(kepler_process_cpu_joules_total{job=\"${job}\",container_id!=\"\", zone=\"${zone}\"}[20s])) \n- \nsum(rate(kepler_container_cpu_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s]))",
           "instant": false,
-          "legendFormat": "Kepler Reboot - Process-Container Gap (Joules)",
+          "legendFormat": "Kepler Reboot:  Process - Container (J/s)",
           "range": true,
           "refId": "A"
         },
@@ -1727,10 +1878,10 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "sum(kepler_process_${zones}_watts{job=\"${job}\",container_id!=\"\"}) - on() sum(kepler_container_${zones}_watts{job=\"${job}\"})",
+          "expr": "sum(kepler_process_cpu_watts{job=\"${job}\",container_id!=\"\", zone=\"${zone}\"}) \n- \nsum(kepler_container_cpu_watts{job=\"${job}\", zone=\"${zone}\"})",
           "hide": false,
           "instant": false,
-          "legendFormat": "Kepler Reboot - Process-Container Gap (Watts)",
+          "legendFormat": "Kepler Reboot: Process - Container (W)",
           "range": true,
           "refId": "B"
         },
@@ -1740,10 +1891,10 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "sum(rate(kepler_process_${zones}_joules_total{job=\"kepler-latest\"}[20s])) - sum(rate(kepler_container_${zones}_joules_total{job=\"kepler-latest\"}[20s]))",
+          "expr": "sum(rate(kepler_process_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))\n-\nsum(rate(kepler_container_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "Kepler - Process-Container Gap",
+          "legendFormat": "Kepler OLD:  Process - Container (J/s)",
           "range": true,
           "refId": "C"
         }
@@ -1775,27 +1926,28 @@
           "color": {
             "mode": "thresholds"
           },
+          "decimals": 2,
           "mappings": [],
-          "max": 100,
+          "max": 15,
           "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "super-light-green",
                 "value": null
               },
               {
-                "color": "yellow",
-                "value": 30
+                "color": "semi-dark-yellow",
+                "value": 3
               },
               {
-                "color": "orange",
-                "value": 50
+                "color": "semi-dark-orange",
+                "value": 5
               },
               {
-                "color": "red",
-                "value": 70
+                "color": "semi-dark-red",
+                "value": 10
               }
             ]
           },
@@ -1804,7 +1956,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 6,
         "w": 12,
         "x": 0,
         "y": 92
@@ -1837,9 +1989,9 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "100 * (sum(rate(kepler_node_${zones}_joules_total{job=\"${job}\"}[20s])) - sum(rate(kepler_process_${zones}_joules_total{job=\"${job}\"}[20s]))) / sum(rate(kepler_node_${zones}_joules_total{job=\"${job}\"}[20s]))",
+          "expr": "100 * (\n    sum(rate(kepler_node_cpu_active_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s])) \n    -\n    sum(rate(kepler_process_cpu_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s]))\n) / \nsum(rate(kepler_node_cpu_active_joules_total{job=\"${job}\", zone=\"${zone}\"}[20s]))",
           "instant": false,
-          "legendFormat": "Process Attribution Gap",
+          "legendFormat": "Process Attribution Gap (ΔJ/s)",
           "range": true,
           "refId": "A"
         }
@@ -1859,26 +2011,26 @@
             "mode": "thresholds"
           },
           "mappings": [],
-          "max": 100,
+          "max": 15,
           "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "super-light-green",
                 "value": null
               },
               {
                 "color": "yellow",
-                "value": 30
+                "value": 3
               },
               {
                 "color": "orange",
-                "value": 50
+                "value": 5
               },
               {
                 "color": "red",
-                "value": 70
+                "value": 10
               }
             ]
           },
@@ -1887,7 +2039,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 6,
         "w": 12,
         "x": 12,
         "y": 92
@@ -1920,7 +2072,7 @@
             "uid": "PDE6745920139CE56"
           },
           "editorMode": "code",
-          "expr": "100 * (sum(rate(kepler_node_${zones}_joules_total{job=\"kepler-latest\"}[20s])) - sum(rate(kepler_process_${zones}_joules_total{job=\"kepler-latest\"}[20s]))) / sum(rate(kepler_node_${zones}_joules_total{job=\"kepler-latest\"}[20s]))",
+          "expr": "100 * (\n    sum(rate(kepler_node_${zone_name}_joules_total{job=\"kepler-old\"}[20s])) - sum(rate(kepler_process_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))\n)  / \nsum(rate(kepler_node_${zone_name}_joules_total{job=\"kepler-old\"}[20s]))",
           "instant": false,
           "legendFormat": "Process Attribution Gap",
           "range": true,
@@ -1933,25 +2085,15 @@
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": [
-    "energy",
-    "monitoring",
-    "kepler",
-    "performance"
-  ],
+  "tags": [],
   "templating": {
     "list": [
       {
-        "current": {
-          "selected": false,
-          "text": "None",
-          "value": ""
-        },
         "datasource": {
           "type": "prometheus",
           "uid": "PDE6745920139CE56"
         },
-        "definition": "query_result(label_join( count by (pid, comm) (kepler_process_package_watts{job=\"$job\"}), \"process\", \" | \", \"comm\", \"pid\" )\t)",
+        "definition": "query_result(label_join( count by (pid, comm) (kepler_process_cpu_watts{job=\"$job\"}), \"process\", \" | \", \"comm\", \"pid\" )\t)",
         "description": "Select a process to monitor for detailed energy consumption analysis",
         "hide": 0,
         "includeAll": false,
@@ -1961,7 +2103,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_join( count by (pid, comm) (kepler_process_package_watts{job=\"$job\"}), \"process\", \" | \", \"comm\", \"pid\" )\t)",
+          "query": "query_result(label_join( count by (pid, comm) (kepler_process_cpu_watts{job=\"$job\"}), \"process\", \" | \", \"comm\", \"pid\" )\t)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -1971,16 +2113,11 @@
         "type": "query"
       },
       {
-        "current": {
-          "selected": true,
-          "text": "kepler-dev",
-          "value": "kepler-dev"
-        },
         "datasource": {
           "type": "prometheus",
           "uid": "PDE6745920139CE56"
         },
-        "definition": "label_values(kepler_node_package_watts,job)",
+        "definition": "label_values(kepler_build_info,job)",
         "description": "Select Kepler Reboot job/instance for monitoring",
         "hide": 0,
         "includeAll": false,
@@ -1990,7 +2127,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(kepler_node_package_watts,job)",
+          "query": "label_values(kepler_build_info,job)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -2000,26 +2137,21 @@
         "type": "query"
       },
       {
-        "current": {
-          "selected": false,
-          "text": "package",
-          "value": "package"
-        },
         "datasource": {
           "type": "prometheus",
           "uid": "PDE6745920139CE56"
         },
-        "definition": "label_values(kepler_node_energy_zone,name)",
+        "definition": "label_values(kepler_node_cpu_watts,zone)",
         "description": "RAPL energy monitoring zones (package, core, dram, etc.)",
         "hide": 0,
         "includeAll": false,
         "label": "🔋 Energy Zone",
         "multi": false,
-        "name": "zones",
+        "name": "zone",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(kepler_node_energy_zone,name)",
+          "query": "label_values(kepler_node_cpu_watts,zone)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -2029,11 +2161,6 @@
         "type": "query"
       },
       {
-        "current": {
-          "selected": false,
-          "text": "1",
-          "value": "1"
-        },
         "description": "Process ID extracted from process selection",
         "hide": 2,
         "includeAll": false,
@@ -2044,11 +2171,33 @@
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PDE6745920139CE56"
+        },
+        "definition": "label_values(kepler_node_cpu_watts{zone=\"$zone\"},zone)",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "zone_name",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(kepler_node_cpu_watts{zone=\"$zone\"},zone)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "/^(.*)-[0-9]+$/",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
       }
     ]
   },
   "time": {
-    "from": "now-15m",
+    "from": "now-5m",
     "to": "now"
   },
   "timepicker": {
@@ -2067,7 +2216,7 @@
   },
   "timezone": "browser",
   "title": "Kepler Energy Monitoring Dashboard",
-  "uid": "behh30oymoi68f",
-  "version": 4,
+  "uid": "aen7lhweas64gf",
+  "version": 13,
   "weekStart": ""
 }

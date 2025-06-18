@@ -12,6 +12,7 @@ import (
 
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/stretchr/testify/assert"
+	"k8s.io/utils/ptr"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -21,6 +22,7 @@ func TestDefaultConfig(t *testing.T) {
 	// Assert default values are set correctly
 	assert.Equal(t, "info", cfg.Log.Level)
 	assert.Equal(t, "text", cfg.Log.Format)
+	assert.Equal(t, "", cfg.Web.Config)
 }
 
 func TestLoadFromYAML(t *testing.T) {
@@ -73,22 +75,31 @@ log:
 func TestCommandLinePrecedence(t *testing.T) {
 	// Create config from YAML
 	yamlData := `
-log:
-  level: info
+exporter:
+  stdout:
+    enabled: false
+  prometheus:
+    enabled: false
+    debugCollectors:
+      - go
+debug:
+  pprof:
+    enabled: false
 `
 	// Load config from YAML
 	reader := strings.NewReader(yamlData)
 	cfg, err := Load(reader)
-	assert.Equal(t, "info", cfg.Log.Level, "Must read YAML file")
 	assert.NoError(t, err)
 
 	// Create a kingpin app and register flags
 	app := kingpin.New("test", "Test application")
 	updateConfig := RegisterFlags(app)
-	assert.Equal(t, "info", cfg.Log.Level, "Must not change YAML values until updateConfig is called")
 
 	// Parse command line arguments that override some settings
-	_, err = app.Parse([]string{"--log.level=debug"})
+	_, err = app.Parse([]string{
+		"--exporter.stdout",
+		"--debug.pprof",
+	})
 	assert.NoError(t, err)
 
 	// Update config with parsed flags
@@ -96,8 +107,11 @@ log:
 	assert.NoError(t, err)
 
 	// Verify that command line arguments take precedence
-	assert.Equal(t, "debug", cfg.Log.Level, "Command line should override YAML value")
-	assert.Equal(t, "text", cfg.Log.Format, "Default value should not be overridden")
+	assert.True(t, *cfg.Exporter.Stdout.Enabled, "stdout exporter should be enabled from flag")
+	assert.False(t, *cfg.Exporter.Prometheus.Enabled, "prometheus exporter should remain disabled from yaml")
+	assert.ElementsMatch(t, []string{"go"}, cfg.Exporter.Prometheus.DebugCollectors,
+		"debug collectors should be overridden by flag")
+	assert.True(t, *cfg.Debug.Pprof.Enabled, "pprof should be enabled from flag")
 }
 
 func TestPartialConfig(t *testing.T) {
@@ -124,18 +138,22 @@ func TestWhitespaceHandling(t *testing.T) {
 log:
   level: "  debug  "
   format: "  json  "
+
+exporter:
+  prometheus:
+    debugCollectors: ["  go  ", "  process  "]
 `
-	// Load config from YAML
 	reader := strings.NewReader(yamlData)
 	cfg, err := Load(reader)
 	assert.NoError(t, err)
 
-	// Trim whitespace
 	cfg.sanitize()
 
 	// Verify whitespace is trimmed
 	assert.Equal(t, "debug", cfg.Log.Level)
 	assert.Equal(t, "json", cfg.Log.Format)
+	assert.ElementsMatch(t, []string{"go", "process"}, cfg.Exporter.Prometheus.DebugCollectors,
+		"debug collectors should be sanitized")
 }
 
 func TestFromRealFile(t *testing.T) {
@@ -146,7 +164,9 @@ log:
 `
 	tmpfile, err := os.CreateTemp("", "config-*.yaml")
 	assert.NoError(t, err)
-	defer os.Remove(tmpfile.Name())
+	defer func() {
+		_ = os.Remove(tmpfile.Name())
+	}()
 
 	_, err = tmpfile.Write([]byte(yamlData))
 	assert.NoError(t, err)
@@ -272,6 +292,23 @@ func TestInvalidConfigurationValues(t *testing.T) {
 			},
 		},
 		error: "invalid web config file",
+	}, {
+		name: "unreadable kubeconfig",
+		config: &Config{
+			Kube: Kube{
+				Config:  "/non/existent/file",
+				Enabled: ptr.To(true),
+			},
+		},
+		error: "unreadable kubeconfig",
+	}, {
+		name: "kube enabled, nodeName not supplied",
+		config: &Config{
+			Kube: Kube{
+				Enabled: ptr.To(true),
+			},
+		},
+		error: "kube.node-name not supplied but kube.enable set to true",
 	}}
 
 	// test yaml marshall
@@ -407,7 +444,7 @@ func TestEnablePprof(t *testing.T) {
 		enabled bool
 	}{{
 		name:    "enable pprof with flag",
-		args:    []string{"--enable.pprof"},
+		args:    []string{"--debug.pprof"},
 		enabled: true,
 	}, {
 		name:    "disable pprof no flag",
@@ -415,7 +452,7 @@ func TestEnablePprof(t *testing.T) {
 		enabled: false,
 	}, {
 		name:    "disable pprof with flag",
-		args:    []string{"--no-enable.pprof"},
+		args:    []string{"--no-debug.pprof"},
 		enabled: false,
 	}}
 
@@ -428,13 +465,12 @@ func TestEnablePprof(t *testing.T) {
 			cfg := DefaultConfig()
 			err := updateConfig(cfg)
 			assert.NoError(t, err, "unexpected config update error")
-			assert.Equal(t, cfg.EnablePprof, tc.enabled, "unexpected flag value")
+			assert.Equal(t, *cfg.Debug.Pprof.Enabled, tc.enabled, "unexpected flag value")
 		})
 	}
 }
 
 func TestWebConfig(t *testing.T) {
-
 	t.Run("no web config", func(t *testing.T) {
 		app := kingpin.New("test", "Test application")
 		updateConfig := RegisterFlags(app)
@@ -457,12 +493,11 @@ func TestWebConfig(t *testing.T) {
 	t.Run("valid web config", func(t *testing.T) {
 		tempWebConfig, err := os.CreateTemp("", "temp_*web.yml")
 		assert.NoError(t, err, "cannot create temp file")
-		defer os.Remove(tempWebConfig.Name())
-		webConfig := fmt.Sprintf(`
+		webConfig := `
 tls_server_config:
   cert_file: cert.pem
   key_file: key.pem
-`)
+`
 		_, err = tempWebConfig.Write([]byte(webConfig))
 		assert.NoError(t, err, "cannot write to temp web config")
 
@@ -475,7 +510,74 @@ tls_server_config:
 		err = updateConfig(cfg)
 		assert.NoError(t, err, "expected config update error")
 		assert.Equal(t, cfg.Web.Config, tempWebConfig.Name(), "unexpected config update")
+		_ = os.Remove(tempWebConfig.Name())
 	})
+}
+
+func TestStdoutExporter(t *testing.T) {
+	tt := []struct {
+		name    string
+		args    []string
+		enabled bool
+	}{{
+		name:    "no exporter.stdout flag present",
+		args:    []string{"--log.level=debug"},
+		enabled: false,
+	}, {
+		name:    "disable stdout exporter with flag",
+		args:    []string{"--no-exporter.stdout"},
+		enabled: false,
+	}, {
+		name:    "disable stdout exporter with flag",
+		args:    []string{"--exporter.stdout"},
+		enabled: true,
+	}}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			app := kingpin.New("test", "Test application")
+			updateConfig := RegisterFlags(app)
+			_, parseErr := app.Parse(tc.args)
+			assert.NoError(t, parseErr, "unexpected flag parsing error")
+			cfg := DefaultConfig()
+			err := updateConfig(cfg)
+			assert.NoError(t, err, "unexpected config update error")
+			assert.Equal(t, *cfg.Exporter.Stdout.Enabled, tc.enabled, "unexpected flag value")
+		})
+	}
+}
+
+func TestPrometheusExporter(t *testing.T) {
+	tt := []struct {
+		name    string
+		args    []string
+		enabled bool
+	}{{
+		name:    "no exporter.prometheus flag present",
+		args:    []string{"--log.level=debug"},
+		enabled: true,
+	}, {
+		name:    "disable prometheus exporter with flag",
+		args:    []string{"--no-exporter.prometheus"},
+		enabled: false,
+	}, {
+		name:    "enable prometheus exporter with flag",
+		args:    []string{"--exporter.prometheus"},
+		enabled: true,
+	}}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			app := kingpin.New("test", "Test application")
+			updateConfig := RegisterFlags(app)
+			_, parseErr := app.Parse(tc.args)
+			assert.NoError(t, parseErr, "unexpected flag parsing error")
+			cfg := DefaultConfig()
+			err := updateConfig(cfg)
+			assert.NoError(t, err, "unexpected config update error")
+			assert.Equal(t, *cfg.Exporter.Prometheus.Enabled, tc.enabled, "unexpected flag value")
+		})
+	}
 }
 
 func TestValidateWithSkip(t *testing.T) {
@@ -574,4 +676,132 @@ func TestMonitorConfigFlags(t *testing.T) {
 			assert.Equal(t, cfg.Monitor.Staleness, tc.expected.staleness)
 		})
 	}
+}
+
+func TestConfigDefault(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// Check default exporter config
+	assert.False(t, *cfg.Exporter.Stdout.Enabled, "stdout exporter should be disabled by default")
+	assert.True(t, *cfg.Exporter.Prometheus.Enabled, "prometheus exporter should be enabled by default")
+	assert.Equal(t, []string{"go"}, cfg.Exporter.Prometheus.DebugCollectors, "default debug collectors should be set")
+
+	// Check default debug config
+	assert.False(t, *cfg.Debug.Pprof.Enabled, "pprof should be disabled by default")
+}
+
+func TestConifgLoadFromYaml(t *testing.T) {
+	yamlData := `
+log:
+  level: debug
+  format: json
+exporter:
+  stdout:
+    enabled: true
+  prometheus:
+    enabled: true
+    debugCollectors:
+      - go
+      - process
+debug:
+  pprof:
+    enabled: true
+`
+	reader := strings.NewReader(yamlData)
+	cfg, err := Load(reader)
+	assert.NoError(t, err)
+
+	// Verify exporter config
+	assert.True(t, *cfg.Exporter.Stdout.Enabled, "stdout exporter should be enabled")
+	assert.True(t, *cfg.Exporter.Prometheus.Enabled, "prometheus exporter should be enabled")
+	assert.ElementsMatch(t, []string{"go", "process"}, cfg.Exporter.Prometheus.DebugCollectors,
+		"debug collectors should match")
+
+	// Verify debug config
+	assert.True(t, *cfg.Debug.Pprof.Enabled, "pprof should be enabled")
+}
+
+func TestBuilder(t *testing.T) {
+	t.Run("Build", func(t *testing.T) {
+		// Test Build should return default config
+		b := &Builder{}
+		got, err := b.Build()
+		assert.NoError(t, err)
+
+		exp := DefaultConfig()
+		assert.Equal(t, exp.String(), got.String())
+	})
+
+	t.Run("Use", func(t *testing.T) {
+		b := &Builder{}
+		exp := DefaultConfig()
+		exp.Log.Level = "warn"
+
+		got, err := b.Use(exp).Build()
+		assert.NoError(t, err)
+		assert.Equal(t, exp.String(), got.String())
+	})
+
+	t.Run("MergeWithInvalidYAML", func(t *testing.T) {
+		b := &Builder{}
+		cfg, err := b.Merge().
+			Merge(`invalid yaml: [invalid`).
+			Build()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse YAML")
+		assert.Nil(t, cfg)
+	})
+
+	t.Run("MultipleMerges", func(t *testing.T) {
+		b := &Builder{}
+		cfg, err := b.
+			Merge(`
+log:
+  level: debug
+`,
+				`
+monitor:
+  interval: 3h
+`,
+				`
+log:
+  level: info
+`).
+			Build()
+		assert.NoError(t, err)
+		exp := DefaultConfig()
+		exp.Log.Level = "info"
+		exp.Monitor.Interval = 3 * time.Hour
+		assert.Equal(t, exp.String(), cfg.String())
+	})
+
+	t.Run("MergeNested", func(t *testing.T) {
+		b := &Builder{}
+		cfg, err := b.
+			Merge(`
+exporter:
+  prometheus:
+    enabled: false
+`).
+			Build()
+		assert.NoError(t, err)
+		exp := DefaultConfig()
+		exp.Exporter.Prometheus.Enabled = ptr.To(false)
+		assert.Equal(t, exp.String(), cfg.String())
+	})
+
+	t.Run("MergeArrays", func(t *testing.T) {
+		b := &Builder{}
+		cfg, err := b.
+			Merge(`
+exporter:
+  prometheus:
+    debugCollectors: ["go", "process"]
+`).
+			Build()
+		assert.NoError(t, err)
+		exp := DefaultConfig()
+		exp.Exporter.Prometheus.DebugCollectors = []string{"go", "process"}
+		assert.Equal(t, exp.String(), cfg.String())
+	})
 }

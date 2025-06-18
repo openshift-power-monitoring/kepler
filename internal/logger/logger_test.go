@@ -66,24 +66,24 @@ func TestSetupLogger(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.expectPanic {
 				assert.Panics(t, func() {
-					_ = New(tt.logLevel, tt.format)
+					_ = New(tt.logLevel, tt.format, os.Stderr)
 				}, "Expected setupLogger to panic with invalid format")
 				//
 				return
 			}
 
-			// Logger writes to stdout, so, redirect stdout to a buffer and
+			// Logger writes to stderr, so, redirect stderr to a buffer and
 			// restore it at the end
-			stdoutOrig := os.Stdout
+			stderrOrig := os.Stderr
 			r, w, _ := os.Pipe()
-			os.Stdout = w
+			os.Stderr = w
 
-			logger := New(tt.logLevel, tt.format)
+			logger := New(tt.logLevel, tt.format, os.Stderr)
 			logger.Info("test message", "key", "value")
 
 			// Restore stdout
-			w.Close()
-			os.Stdout = stdoutOrig
+			assert.NoError(t, w.Close())
+			os.Stderr = stderrOrig
 
 			// read stdout to string
 			var outBuffer bytes.Buffer

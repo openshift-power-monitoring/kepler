@@ -14,6 +14,8 @@ import (
 	"github.com/sustainable-computing-io/kepler/config"
 	"github.com/sustainable-computing-io/kepler/internal/device"
 	"github.com/sustainable-computing-io/kepler/internal/exporter/prometheus"
+	"github.com/sustainable-computing-io/kepler/internal/exporter/stdout"
+	"github.com/sustainable-computing-io/kepler/internal/k8s/pod"
 	"github.com/sustainable-computing-io/kepler/internal/logger"
 	"github.com/sustainable-computing-io/kepler/internal/monitor"
 	"github.com/sustainable-computing-io/kepler/internal/resource"
@@ -29,7 +31,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger := logger.New(cfg.Log.Level, cfg.Log.Format)
+	// Configure logger - use stderr if stdout exporter is enabled to prevent output interleaving
+	logOut := os.Stdout
+	if *cfg.Exporter.Stdout.Enabled {
+		logOut = os.Stderr
+	}
+	logger := logger.New(cfg.Log.Level, cfg.Log.Format, logOut)
+
 	logVersionInfo(logger)
 	printConfigInfo(logger, cfg)
 
@@ -77,7 +85,7 @@ func parseArgsAndConfig() (*config.Config, error) {
 	updateConfig := config.RegisterFlags(app)
 	kingpin.MustParse(app.Parse(os.Args[1:]))
 
-	logger := logger.New("info", "text")
+	logger := logger.New("info", "text", os.Stdout)
 	cfg := config.DefaultConfig()
 	if *configFile != "" {
 		logger.Info("Loading configuration file", "path", *configFile)
@@ -119,10 +127,21 @@ func createServices(logger *slog.Logger, cfg *config.Config) ([]service.Service,
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CPU power meter: %w", err)
 	}
+	var services []service.Service
 
-	resouceInformer, err := resource.NewInformer(
+	var podInformer pod.Informer
+	if *cfg.Kube.Enabled {
+		podInformer = pod.NewInformer(
+			pod.WithLogger(logger),
+			pod.WithKubeConfig(cfg.Kube.Config),
+			pod.WithNodeName(cfg.Kube.Node),
+		)
+		services = append(services, podInformer)
+	}
+	resourceInformer, err := resource.NewInformer(
 		resource.WithLogger(logger),
 		resource.WithProcFSPath(cfg.Host.ProcFS),
+		resource.WithPodInformer(podInformer),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource informer: %w", err)
@@ -131,48 +150,75 @@ func createServices(logger *slog.Logger, cfg *config.Config) ([]service.Service,
 	pm := monitor.NewPowerMonitor(
 		cpuPowerMeter,
 		monitor.WithLogger(logger),
-		monitor.WithResourceInformer(resouceInformer),
+		monitor.WithResourceInformer(resourceInformer),
 		monitor.WithInterval(cfg.Monitor.Interval),
 		monitor.WithMaxStaleness(cfg.Monitor.Staleness),
 	)
 
 	apiServer := server.NewAPIServer(
 		server.WithLogger(logger),
+		server.WithWebConfig(cfg.Web.Config),
 	)
 
-	collectors, err := prometheus.CreateCollectors(
-		pm,
-		prometheus.WithLogger(logger),
-		prometheus.WithProcFSPath(cfg.Host.ProcFS),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Prometheus collectors: %w", err)
-	}
-	// TODO: enable exporters based on config / flags
-	promExporter := prometheus.NewExporter(
-		pm,
-		apiServer,
-		prometheus.WithLogger(logger),
-		prometheus.WithCollectors(collectors),
-	)
-
-	services := []service.Service{
+	services = append(services,
+		resourceInformer,
 		cpuPowerMeter,
-		promExporter,
 		apiServer,
 		pm,
+	)
+
+	// Add Prometheus exporter if enabled
+	if *cfg.Exporter.Prometheus.Enabled {
+		promExporter, err := createPrometheusExporter(logger, cfg, apiServer, pm)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Prometheus exporter: %w", err)
+		}
+		services = append(services, promExporter)
 	}
 
-	if cfg.EnablePprof {
+	// Add pprof if enabled
+	if *cfg.Debug.Pprof.Enabled {
 		pprof := server.NewPprof(apiServer)
 		services = append(services, pprof)
+	}
+
+	// Add stdout exporter if enabled
+	if *cfg.Exporter.Stdout.Enabled {
+		stdoutExporter := stdout.NewExporter(pm, stdout.WithLogger(logger))
+		services = append(services, stdoutExporter)
 	}
 
 	return services, nil
 }
 
+func createPrometheusExporter(logger *slog.Logger, cfg *config.Config, apiServer *server.APIServer, pm *monitor.PowerMonitor) (*prometheus.Exporter, error) {
+	logger.Debug("Creating Prometheus exporter")
+
+	collectors, err := prometheus.CreateCollectors(
+		pm,
+		prometheus.WithLogger(logger),
+		prometheus.WithProcFSPath(cfg.Host.ProcFS),
+		prometheus.WithNodeName(cfg.Kube.Node),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Prometheus collectors: %w", err)
+	}
+
+	debugCollectors := cfg.Exporter.Prometheus.DebugCollectors
+
+	promExporter := prometheus.NewExporter(
+		pm,
+		apiServer,
+		prometheus.WithLogger(logger),
+		prometheus.WithCollectors(collectors),
+		prometheus.WithDebugCollectors(debugCollectors),
+	)
+
+	return promExporter, nil
+}
+
 func createCPUMeter(logger *slog.Logger, cfg *config.Config) (device.CPUPowerMeter, error) {
-	if fake := cfg.Dev.FakeCpuMeter; fake.Enabled {
+	if fake := cfg.Dev.FakeCpuMeter; *fake.Enabled {
 		return device.NewFakeCPUMeter(fake.Zones, device.WithFakeLogger(logger))
 	}
 

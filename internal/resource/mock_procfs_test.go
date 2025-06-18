@@ -4,10 +4,12 @@
 package resource
 
 import (
+	"context"
 	"math/rand"
 	"strings"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/sustainable-computing-io/kepler/internal/k8s/pod"
 )
 
 // MockProcInfo is a mock implementation of procInfo for testing
@@ -60,6 +62,11 @@ func (m *MockProcReader) AllProcs() ([]procInfo, error) {
 	return args.Get(0).([]procInfo), args.Error(1)
 }
 
+func (m *MockProcReader) CPUUsageRatio() (float64, error) {
+	args := m.Called()
+	return args.Get(0).(float64), args.Error(1)
+}
+
 func mockContainerIDAndPath(rt ContainerRuntime) (string, string) {
 	containerPaths := map[ContainerRuntime]string{
 		DockerRuntime:     "/docker/<id>",
@@ -79,4 +86,31 @@ func mockContainerIDAndPath(rt ContainerRuntime) (string, string) {
 	}
 	id := string(rand64)
 	return id, strings.ReplaceAll(containerPaths[rt], "<id>", id)
+}
+
+type mockPodInformer struct {
+	mock.Mock
+}
+
+func (m *mockPodInformer) Init() error {
+	args := m.Called()
+	return args.Error(0)
+}
+
+func (m *mockPodInformer) Run(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func (m *mockPodInformer) LookupByContainerID(containerID string) (*pod.ContainerInfo, bool, error) {
+	args := m.Called(containerID)
+	if podInfo, ok := args.Get(0).(*pod.ContainerInfo); ok {
+		return podInfo, args.Bool(1), args.Error(2)
+	}
+	return nil, args.Bool(1), args.Error(2)
+}
+
+func (m *mockPodInformer) Name() string {
+	args := m.Called()
+	return args.String(0)
 }

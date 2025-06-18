@@ -54,9 +54,9 @@ jobs:
           cache: false
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: v1.56
+          version: v2.1.6
           args: --timeout=3m --issues-exit-code=0 ./...
           only-new-issues: true
 
@@ -78,10 +78,26 @@ jobs:
         shell: bash
         run: make vet && git diff --exit-code
 
-  codecov-upload:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout source
+        uses: actions/checkout@v4
+
+      - name: setup go
+        uses: actions/setup-go@v5.4.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: make gen-metrics-docs
+        shell: bash
+        run: make gen-metrics-docs && git diff --exit-code
+
+  test-and-codecov:
     needs: check-changes
     if: needs.check-changes.outputs.changes == 'true'
-    uses: ./.github/workflows/codecov-upload.yaml
+    uses: ./.github/workflows/test-and-codecov.yaml
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
@@ -90,12 +106,23 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v3
 
-      - name: Setup Pre-Commit
-        uses: pre-commit/action@v3.0.1
+      - name: Setup Pre-commit
+        run: pip install pre-commit
+
+      - name: Run Pre-commit
+        run: pre-commit run --all-files
+
+      - name: Run Commitlint
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "$COMMIT_MSG" > .git/COMMIT_EDITMSG
+          pre-commit run commitlint --hook-stage commit-msg --commit-msg-file .git/COMMIT_EDITMSG
 
   build-images:
     runs-on: ubuntu-latest
@@ -113,3 +140,12 @@ jobs:
         uses: ./.github/publish-image
         with:
           registry: localhost:5001
+
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build and Deploy Kepler on K8s
+        uses: ./.github/k8s

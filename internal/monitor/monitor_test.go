@@ -20,11 +20,10 @@ import (
 )
 
 func TestNewPowerMonitor(t *testing.T) {
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	tt := []struct {
 		name string
@@ -148,11 +147,10 @@ func TestPowerMonitor_Snapshot(t *testing.T) {
 	mockPowerMeter.On("Init").Return(nil)
 	mockPowerMeter.On("Zones").Return(energyZones, nil)
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	monitor := NewPowerMonitor(mockPowerMeter, WithResourceInformer(resourceInformer))
 
@@ -270,11 +268,10 @@ func TestPowerMonitor_Run(t *testing.T) {
 	pkg.On("Energy").Return(Energy(100*Joule), nil)
 	mockMeter.On("Zones").Return([]EnergyZone{pkg}, nil)
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	monitor := NewPowerMonitor(mockMeter, WithResourceInformer(resourceInformer))
 
@@ -321,11 +318,10 @@ func TestPowerMonitor_Run_WithTimeout(t *testing.T) {
 	mockMeter.On("Init", mock.Anything).Return(nil).Once()
 	mockMeter.On("Zones").Return([]EnergyZone{pkg}, nil)
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	monitor := NewPowerMonitor(mockMeter, WithResourceInformer(resourceInformer))
 
@@ -350,11 +346,10 @@ func TestPowerMonitor_FullInitRunShutdownCycle(t *testing.T) {
 	zone.On("Energy").Return(Energy(100*Joule), nil)
 	mockMeter.On("Zones").Return([]EnergyZone{zone}, nil)
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	monitor := NewPowerMonitor(mockMeter, WithResourceInformer(resourceInformer))
 
@@ -403,11 +398,10 @@ func TestMonitorRefreshSnapshot(t *testing.T) {
 	mockCPUPowerMeter := &MockCPUPowerMeter{}
 	mockCPUPowerMeter.On("Zones").Return(testZones, nil)
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	t.Run("Basic", func(t *testing.T) {
 		startTime := time.Date(2025, 4, 29, 11, 20, 0, 0, time.UTC)
@@ -443,15 +437,13 @@ func TestMonitorRefreshSnapshot(t *testing.T) {
 			pkgZone := current.Node.Zones[pkg]
 			// should equal what package zone returns
 			raplPkgEnergy, _ := pkg.Energy()
-			assert.Equal(t, raplPkgEnergy.MicroJoules(), pkgZone.Absolute.MicroJoules())
-			assert.Equal(t, Energy(0), pkgZone.Delta) // First reading has 0 diff
-			assert.Equal(t, Power(0), pkgZone.Power)  // Should be 0 for first reading
+			assert.Equal(t, raplPkgEnergy.MicroJoules(), pkgZone.EnergyTotal.MicroJoules())
+			assert.Equal(t, Power(0), pkgZone.Power) // Should be 0 for first reading
 
 			// Check core zone values
 			coreZone := current.Node.Zones[core]
 			raplCoreEnergy, _ := core.Energy()
-			assert.Equal(t, raplCoreEnergy.MicroJoules(), coreZone.Absolute.MicroJoules())
-			assert.Equal(t, Energy(0), coreZone.Delta)
+			assert.Equal(t, raplCoreEnergy.MicroJoules(), coreZone.EnergyTotal.MicroJoules())
 			assert.Equal(t, Power(0), coreZone.Power)
 		})
 
@@ -478,14 +470,12 @@ func TestMonitorRefreshSnapshot(t *testing.T) {
 			current := pm.snapshot.Load()
 			pkgZone := current.Node.Zones[pkg]
 			raplPkgEnergy, _ := pkg.Energy()
-			assert.Equal(t, raplPkgEnergy, pkgZone.Absolute)     // No difference in Absolute counter
-			assert.InDelta(t, 50, pkgZone.Delta.Joules(), 0.001) // Should see 50 joules difference
-			assert.InDelta(t, 50, pkgZone.Power.Watts(), 0.001)  // 50 joules / 1 second = 50 watts
+			assert.Equal(t, raplPkgEnergy, pkgZone.EnergyTotal) // No difference in Absolute counter
+			assert.InDelta(t, 50, pkgZone.Power.Watts(), 0.001) // 50 joules / 1 second = 50 watts
 
 			coreZone := current.Node.Zones[core]
 			raplCoreEnergy, _ := core.Energy()
-			assert.Equal(t, raplCoreEnergy, coreZone.Absolute)    // No difference in Absolute counter
-			assert.InDelta(t, 25, coreZone.Delta.Joules(), 0.001) // Should see 25 joules difference
+			assert.Equal(t, raplCoreEnergy, coreZone.EnergyTotal) // No difference in Absolute counter
 			assert.InDelta(t, 25, coreZone.Power.Watts(), 0.001)  // 25 joules / 1 second = 25 watts
 
 			pm.snapshot.Store(current)
@@ -510,14 +500,12 @@ func TestMonitorRefreshSnapshot(t *testing.T) {
 			current := pm.snapshot.Load()
 			pkgZone := current.Node.Zones[pkg]
 			raplPkgEnergy, _ := pkg.Energy()
-			assert.Equal(t, raplPkgEnergy, pkgZone.Absolute)
-			assert.InDelta(t, 75, pkgZone.Delta.Joules(), 0.001)
+			assert.Equal(t, raplPkgEnergy, pkgZone.EnergyTotal)
 			assert.InDelta(t, 25, pkgZone.Power.Watts(), 0.001)
 
 			coreZone := current.Node.Zones[core]
 			raplCoreEnergy, _ := core.Energy()
-			assert.Equal(t, raplCoreEnergy, coreZone.Absolute)
-			assert.InDelta(t, 45, coreZone.Delta.Joules(), 0.001)
+			assert.Equal(t, raplCoreEnergy, coreZone.EnergyTotal)
 			assert.InDelta(t, 15, coreZone.Power.Watts(), 0.001)
 
 			pm.snapshot.Store(current)
@@ -550,15 +538,13 @@ func TestMonitorRefreshSnapshot(t *testing.T) {
 			current := pm.snapshot.Load()
 			pkgZone := current.Node.Zones[pkg]
 			raplPkgEnergy, _ := pkg.Energy()
-			assert.Equal(t, raplPkgEnergy, pkgZone.Absolute)
+			assert.Equal(t, raplPkgEnergy, pkgZone.EnergyTotal)
 
-			assert.InDelta(t, 80, pkgZone.Delta.Joules(), 0.001)
 			assert.InDelta(t, 8, pkgZone.Power.Watts(), 0.001)
 
 			coreZone := current.Node.Zones[core]
 			raplCoreEnergy, _ := core.Energy()
-			assert.Equal(t, raplCoreEnergy, coreZone.Absolute)
-			assert.InDelta(t, 30, coreZone.Delta.Joules(), 0.001)
+			assert.Equal(t, raplCoreEnergy, coreZone.EnergyTotal)
 			assert.InDelta(t, 3, coreZone.Power.Watts(), 0.001)
 
 			pm.snapshot.Store(current)
@@ -575,11 +561,10 @@ func TestRefreshSnapshotError(t *testing.T) {
 	startTime := time.Date(2023, 4, 15, 9, 0, 0, 0, time.UTC)
 	mockClock := test_clock.NewFakeClock(startTime)
 
-	procs, containers := CreateTestResources()
+	tr := CreateTestResources()
 	resourceInformer := &MockResourceInformer{}
+	resourceInformer.SetExpectations(t, tr)
 	resourceInformer.On("Refresh").Return(nil)
-	resourceInformer.On("Processes").Return(procs, nil)
-	resourceInformer.On("Containers").Return(containers, nil)
 
 	// Create PowerMonitor with the mock
 	pm := NewPowerMonitor(
