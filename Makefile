@@ -12,6 +12,8 @@ GOFMT=$(GOCMD) fmt
 GOOS=$(shell go env GOOS)
 GOARCH=$(shell go env GOARCH)
 
+CGO_ENABLED ?= 0
+
 # Project parameters
 BINARY_NAME=kepler
 
@@ -60,7 +62,7 @@ all: clean fmt lint vet build test
 .PHONY: build
 build:
 	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=0 $(GOBUILD) $(BUILD_ARGS) \
+	CGO_ENABLED=$(CGO_ENABLED) $(GOBUILD) $(BUILD_ARGS) \
 		$(LDFLAGS) \
 		-o $(BINARY_DIR)/$(BINARY_NAME) \
 		$(MAIN_GO_PATH)

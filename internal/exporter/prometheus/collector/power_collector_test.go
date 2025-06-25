@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/sustainable-computing-io/kepler/internal/device"
+	"github.com/sustainable-computing-io/kepler/internal/exporter/prometheus/metrics"
 	"github.com/sustainable-computing-io/kepler/internal/monitor"
 	"github.com/sustainable-computing-io/kepler/internal/resource"
 )
@@ -284,7 +285,8 @@ func TestPowerCollector(t *testing.T) {
 	mockMonitor.On("Snapshot").Return(testData, nil)
 
 	// Create collector
-	collector := NewPowerCollector(mockMonitor, "test-node", logger)
+	allLevels := metrics.MetricsLevelNode | metrics.MetricsLevelProcess | metrics.MetricsLevelContainer | metrics.MetricsLevelVM | metrics.MetricsLevelPod
+	collector := NewPowerCollector(mockMonitor, "test-node", logger, allLevels)
 
 	// Trigger update to ensure descriptors are created
 	mockMonitor.TriggerUpdate()
@@ -565,7 +567,7 @@ func TestTerminatedProcessExport(t *testing.T) {
 
 	mockMonitor.On("Snapshot").Return(testSnapshot, nil)
 
-	collector := NewPowerCollector(mockMonitor, "test-node", logger)
+	collector := NewPowerCollector(mockMonitor, "test-node", logger, metrics.MetricsLevelNode|metrics.MetricsLevelProcess|metrics.MetricsLevelContainer|metrics.MetricsLevelVM|metrics.MetricsLevelPod)
 
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collector)
@@ -670,7 +672,7 @@ func TestEnhancedErrorReporting(t *testing.T) {
 	}
 
 	mockMonitor.On("Snapshot").Return(testSnapshot, nil)
-	collector := NewPowerCollector(mockMonitor, "test-node", logger)
+	collector := NewPowerCollector(mockMonitor, "test-node", logger, metrics.MetricsLevelNode|metrics.MetricsLevelProcess|metrics.MetricsLevelContainer|metrics.MetricsLevelVM|metrics.MetricsLevelPod)
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collector)
 	mockMonitor.TriggerUpdate()
@@ -679,6 +681,377 @@ func TestEnhancedErrorReporting(t *testing.T) {
 	// This should fail and show detailed error reporting
 	assertMetricLabelValues(t, registry, "kepler_process_cpu_joules_total",
 		map[string]string{"pid": "999", "state": "nonexistent", "comm": "missing-proc"}, 100.0)
+
+	mockMonitor.AssertExpectations(t)
+}
+
+func TestPowerCollector_MetricsLevelFiltering(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	tests := []struct {
+		name            string
+		metricsLevel    metrics.Level
+		expectedMetrics map[string]bool
+	}{
+		{
+			name:         "Only Node metrics",
+			metricsLevel: metrics.MetricsLevelNode,
+			expectedMetrics: map[string]bool{
+				"kepler_node_cpu_joules_total":        true,
+				"kepler_node_cpu_watts":               true,
+				"kepler_node_cpu_usage_ratio":         true,
+				"kepler_node_cpu_active_joules_total": true,
+				"kepler_node_cpu_active_watts":        true,
+				"kepler_node_cpu_idle_joules_total":   true,
+				"kepler_node_cpu_idle_watts":          true,
+				"kepler_process_cpu_joules_total":     false,
+				"kepler_container_cpu_joules_total":   false,
+				"kepler_vm_cpu_joules_total":          false,
+				"kepler_pod_cpu_joules_total":         false,
+			},
+		},
+		{
+			name:         "Only Process metrics",
+			metricsLevel: metrics.MetricsLevelProcess,
+			expectedMetrics: map[string]bool{
+				"kepler_node_cpu_joules_total":      false,
+				"kepler_process_cpu_joules_total":   true,
+				"kepler_process_cpu_watts":          true,
+				"kepler_process_cpu_seconds_total":  true,
+				"kepler_container_cpu_joules_total": false,
+				"kepler_vm_cpu_joules_total":        false,
+				"kepler_pod_cpu_joules_total":       false,
+			},
+		},
+		{
+			name:         "Node and Container metrics",
+			metricsLevel: metrics.MetricsLevelNode | metrics.MetricsLevelContainer,
+			expectedMetrics: map[string]bool{
+				"kepler_node_cpu_joules_total":      true,
+				"kepler_node_cpu_watts":             true,
+				"kepler_process_cpu_joules_total":   false,
+				"kepler_container_cpu_joules_total": true,
+				"kepler_container_cpu_watts":        true,
+				"kepler_vm_cpu_joules_total":        false,
+				"kepler_pod_cpu_joules_total":       false,
+			},
+		},
+		{
+			name:         "No metrics",
+			metricsLevel: metrics.Level(0),
+			expectedMetrics: map[string]bool{
+				"kepler_node_cpu_joules_total":      false,
+				"kepler_process_cpu_joules_total":   false,
+				"kepler_container_cpu_joules_total": false,
+				"kepler_vm_cpu_joules_total":        false,
+				"kepler_pod_cpu_joules_total":       false,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockMonitor := NewMockPowerMonitor()
+
+			// Create test data with all types of metrics
+			packageZone := device.NewMockRaplZone("package", 0, "/sys/class/powercap/intel-rapl/intel-rapl:0", 1000)
+			testData := &monitor.Snapshot{
+				Timestamp: time.Now(),
+				Node: &monitor.Node{
+					Zones: monitor.NodeZoneUsageMap{
+						packageZone: monitor.NodeUsage{
+							EnergyTotal:       1000 * device.Joule,
+							Power:             10 * device.Watt,
+							ActiveEnergyTotal: 500 * device.Joule,
+							IdleEnergyTotal:   500 * device.Joule,
+							ActivePower:       5 * device.Watt,
+							IdlePower:         5 * device.Watt,
+						},
+					},
+					UsageRatio: 0.5,
+				},
+				Processes: monitor.Processes{
+					123: &monitor.Process{
+						PID:          123,
+						Comm:         "test-process",
+						Exe:          "/usr/bin/test-process",
+						Type:         resource.RegularProcess,
+						CPUTotalTime: 5.0,
+						Zones: monitor.ZoneUsageMap{
+							packageZone: monitor.Usage{
+								EnergyTotal: 100 * device.Joule,
+								Power:       5 * device.Watt,
+							},
+						},
+						ContainerID:      "test-container",
+						VirtualMachineID: "test-vm",
+					},
+				},
+				Containers: monitor.Containers{
+					"test-container": &monitor.Container{
+						ID:      "test-container",
+						Name:    "test-container",
+						Runtime: resource.PodmanRuntime,
+						PodID:   "test-pod",
+						Zones: monitor.ZoneUsageMap{
+							packageZone: monitor.Usage{
+								EnergyTotal: 100 * device.Joule,
+								Power:       5 * device.Watt,
+							},
+						},
+					},
+				},
+				VirtualMachines: monitor.VirtualMachines{
+					"test-vm": &monitor.VirtualMachine{
+						ID:         "test-vm",
+						Name:       "test-vm",
+						Hypervisor: resource.KVMHypervisor,
+						Zones: monitor.ZoneUsageMap{
+							packageZone: monitor.Usage{
+								EnergyTotal: 100 * device.Joule,
+								Power:       5 * device.Watt,
+							},
+						},
+					},
+				},
+				Pods: monitor.Pods{
+					"test-pod": &monitor.Pod{
+						ID:        "test-pod",
+						Name:      "test-pod",
+						Namespace: "default",
+						Zones: monitor.ZoneUsageMap{
+							packageZone: monitor.Usage{
+								EnergyTotal: 100 * device.Joule,
+								Power:       5 * device.Watt,
+							},
+						},
+					},
+				},
+			}
+
+			mockMonitor.On("Snapshot").Return(testData, nil)
+
+			collector := NewPowerCollector(mockMonitor, "test-node", logger, tt.metricsLevel)
+			registry := prometheus.NewRegistry()
+			registry.MustRegister(collector)
+
+			mockMonitor.TriggerUpdate()
+			time.Sleep(10 * time.Millisecond)
+
+			// Gather metrics
+			metricFamilies, err := registry.Gather()
+			assert.NoError(t, err)
+
+			// Create a map of existing metrics
+			existingMetrics := make(map[string]bool)
+			for _, mf := range metricFamilies {
+				existingMetrics[mf.GetName()] = true
+			}
+
+			// Check expected metrics
+			for metricName, shouldExist := range tt.expectedMetrics {
+				if shouldExist {
+					assert.True(t, existingMetrics[metricName], "Expected metric %s to exist", metricName)
+				} else {
+					assert.False(t, existingMetrics[metricName], "Expected metric %s to not exist", metricName)
+				}
+			}
+
+			mockMonitor.AssertExpectations(t)
+		})
+	}
+}
+
+func TestTerminatedContainerExport(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mockMonitor := NewMockPowerMonitor()
+
+	packageZone := device.NewMockRaplZone("package", 0, "/sys/class/powercap/intel-rapl/intel-rapl:0", 1000)
+
+	testSnapshot := &monitor.Snapshot{
+		Timestamp: time.Now(),
+		Node: &monitor.Node{
+			Zones: monitor.NodeZoneUsageMap{
+				packageZone: monitor.NodeUsage{
+					EnergyTotal: 1000 * device.Joule,
+					Power:       10 * device.Watt,
+				},
+			},
+		},
+		Processes: monitor.Processes{},
+		Containers: monitor.Containers{
+			"running-container": &monitor.Container{
+				ID:      "running-container",
+				Name:    "running-cont",
+				Runtime: resource.DockerRuntime,
+				Zones: monitor.ZoneUsageMap{
+					packageZone: monitor.Usage{
+						EnergyTotal: 150 * device.Joule,
+						Power:       15 * device.Watt,
+					},
+				},
+			},
+		},
+		TerminatedContainers: monitor.Containers{
+			"terminated-container": &monitor.Container{
+				ID:      "terminated-container",
+				Name:    "terminated-cont",
+				Runtime: resource.PodmanRuntime,
+				Zones: monitor.ZoneUsageMap{
+					packageZone: monitor.Usage{
+						EnergyTotal: 300 * device.Joule,
+						Power:       30 * device.Watt,
+					},
+				},
+			},
+		},
+		VirtualMachines: monitor.VirtualMachines{},
+		Pods:            monitor.Pods{},
+	}
+
+	mockMonitor.On("Snapshot").Return(testSnapshot, nil)
+
+	allLevels := metrics.MetricsLevelNode | metrics.MetricsLevelProcess | metrics.MetricsLevelContainer | metrics.MetricsLevelVM | metrics.MetricsLevelPod
+	collector := NewPowerCollector(mockMonitor, "test-node", logger, allLevels)
+
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collector)
+
+	mockMonitor.TriggerUpdate()
+	time.Sleep(10 * time.Millisecond)
+
+	t.Run("Terminated Container Metrics Export", func(t *testing.T) {
+		// Test running container metrics
+		assertMetricLabelValues(t, registry, "kepler_container_cpu_joules_total",
+			map[string]string{"container_id": "running-container", "state": "running"}, 150.0)
+		assertMetricLabelValues(t, registry, "kepler_container_cpu_watts",
+			map[string]string{"container_id": "running-container", "state": "running"}, 15.0)
+
+		// Test terminated container metrics
+		assertMetricLabelValues(t, registry, "kepler_container_cpu_joules_total",
+			map[string]string{"container_id": "terminated-container", "state": "terminated"}, 300.0)
+		assertMetricLabelValues(t, registry, "kepler_container_cpu_watts",
+			map[string]string{"container_id": "terminated-container", "state": "terminated"}, 30.0)
+
+		// Test additional labels for running container
+		assertMetricLabelValues(t, registry, "kepler_container_cpu_joules_total",
+			map[string]string{"container_id": "running-container", "container_name": "running-cont", "runtime": "docker"}, 150.0)
+
+		// Test additional labels for terminated container
+		assertMetricLabelValues(t, registry, "kepler_container_cpu_joules_total",
+			map[string]string{"container_id": "terminated-container", "container_name": "terminated-cont", "runtime": "podman"}, 300.0)
+	})
+
+	t.Run("Container State Labels", func(t *testing.T) {
+		// Verify that the state label exists and has correct values
+		assertMetricExists(t, registry, "kepler_container_cpu_joules_total",
+			map[string]string{"state": "running"})
+		assertMetricExists(t, registry, "kepler_container_cpu_joules_total",
+			map[string]string{"state": "terminated"})
+
+		// Also verify for watts metrics
+		assertMetricExists(t, registry, "kepler_container_cpu_watts",
+			map[string]string{"state": "running"})
+		assertMetricExists(t, registry, "kepler_container_cpu_watts",
+			map[string]string{"state": "terminated"})
+	})
+
+	mockMonitor.AssertExpectations(t)
+}
+
+func TestTerminatedVMExport(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mockMonitor := NewMockPowerMonitor()
+
+	packageZone := device.NewMockRaplZone("package", 0, "/sys/class/powercap/intel-rapl/intel-rapl:0", 1000)
+
+	testSnapshot := &monitor.Snapshot{
+		Timestamp: time.Now(),
+		Node: &monitor.Node{
+			Zones: monitor.NodeZoneUsageMap{
+				packageZone: monitor.NodeUsage{
+					EnergyTotal: 1000 * device.Joule,
+					Power:       10 * device.Watt,
+				},
+			},
+		},
+		Processes:  monitor.Processes{},
+		Containers: monitor.Containers{},
+		VirtualMachines: monitor.VirtualMachines{
+			"running-vm": &monitor.VirtualMachine{
+				ID:         "running-vm",
+				Name:       "running-virtual-machine",
+				Hypervisor: resource.KVMHypervisor,
+				Zones: monitor.ZoneUsageMap{
+					packageZone: monitor.Usage{
+						EnergyTotal: 250 * device.Joule,
+						Power:       25 * device.Watt,
+					},
+				},
+			},
+		},
+		TerminatedVirtualMachines: monitor.VirtualMachines{
+			"terminated-vm": &monitor.VirtualMachine{
+				ID:         "terminated-vm",
+				Name:       "terminated-virtual-machine",
+				Hypervisor: resource.KVMHypervisor,
+				Zones: monitor.ZoneUsageMap{
+					packageZone: monitor.Usage{
+						EnergyTotal: 400 * device.Joule,
+						Power:       40 * device.Watt,
+					},
+				},
+			},
+		},
+		Pods: monitor.Pods{},
+	}
+
+	mockMonitor.On("Snapshot").Return(testSnapshot, nil)
+
+	allLevels := metrics.MetricsLevelNode | metrics.MetricsLevelProcess | metrics.MetricsLevelContainer | metrics.MetricsLevelVM | metrics.MetricsLevelPod
+	collector := NewPowerCollector(mockMonitor, "test-node", logger, allLevels)
+
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collector)
+
+	mockMonitor.TriggerUpdate()
+	time.Sleep(10 * time.Millisecond)
+
+	t.Run("Terminated VM Metrics Export", func(t *testing.T) {
+		// Test running VM metrics
+		assertMetricLabelValues(t, registry, "kepler_vm_cpu_joules_total",
+			map[string]string{"vm_id": "running-vm", "state": "running"}, 250.0)
+		assertMetricLabelValues(t, registry, "kepler_vm_cpu_watts",
+			map[string]string{"vm_id": "running-vm", "state": "running"}, 25.0)
+
+		// Test terminated VM metrics
+		assertMetricLabelValues(t, registry, "kepler_vm_cpu_joules_total",
+			map[string]string{"vm_id": "terminated-vm", "state": "terminated"}, 400.0)
+		assertMetricLabelValues(t, registry, "kepler_vm_cpu_watts",
+			map[string]string{"vm_id": "terminated-vm", "state": "terminated"}, 40.0)
+
+		// Test additional labels for running VM
+		assertMetricLabelValues(t, registry, "kepler_vm_cpu_joules_total",
+			map[string]string{"vm_id": "running-vm", "vm_name": "running-virtual-machine", "hypervisor": "kvm"}, 250.0)
+
+		// Test additional labels for terminated VM
+		assertMetricLabelValues(t, registry, "kepler_vm_cpu_joules_total",
+			map[string]string{"vm_id": "terminated-vm", "vm_name": "terminated-virtual-machine", "hypervisor": "kvm"}, 400.0)
+	})
+
+	t.Run("VM State Labels", func(t *testing.T) {
+		// Verify that the state label exists and has correct values
+		assertMetricExists(t, registry, "kepler_vm_cpu_joules_total",
+			map[string]string{"state": "running"})
+		assertMetricExists(t, registry, "kepler_vm_cpu_joules_total",
+			map[string]string{"state": "terminated"})
+
+		// Also verify for watts metrics
+		assertMetricExists(t, registry, "kepler_vm_cpu_watts",
+			map[string]string{"state": "running"})
+		assertMetricExists(t, registry, "kepler_vm_cpu_watts",
+			map[string]string{"state": "terminated"})
+	})
 
 	mockMonitor.AssertExpectations(t)
 }
