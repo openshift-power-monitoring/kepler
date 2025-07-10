@@ -17,6 +17,8 @@ data:
     monitor:
       interval: 5s
       staleness: 500ms
+      maxTerminated: 100
+      minTerminatedEnergyThreshold: 10
     rapl:
       zones: []
     exporter:
@@ -28,6 +30,8 @@ data:
           - go
     web:
       configFile: ""
+      listenAddresses:
+        - ":28282"
     debug:
       pprof:
         enabled: false

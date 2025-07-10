@@ -8,20 +8,11 @@ import (
 	"log/slog"
 	"math/rand"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
 // NOTE: This fake meter is not intended to be used in production and is for testing only
-
-type Zone = string
-
-const (
-	ZonePackage Zone = "package"
-	ZoneCore    Zone = "core"
-	ZoneDRAM    Zone = "dram"
-	ZoneUncore  Zone = "uncore"
-)
-
 var defaultFakeZones = []Zone{ZonePackage, ZoneCore, ZoneDRAM}
 
 const defaultRaplPath = "/sys/class/powercap/intel-rapl"
@@ -160,4 +151,26 @@ func (m *fakeRaplMeter) Name() string {
 
 func (m *fakeRaplMeter) Zones() ([]EnergyZone, error) {
 	return m.zones, nil
+}
+
+// PrimaryEnergyZone returns the zone with the highest energy coverage/priority
+func (m *fakeRaplMeter) PrimaryEnergyZone() (EnergyZone, error) {
+	zones, err := m.Zones()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(zones) == 0 {
+		return nil, fmt.Errorf("no zones available in fake meter")
+	}
+
+	// For fake meter, prefer package if available, otherwise first zone
+	for _, zone := range zones {
+		if strings.Contains(strings.ToLower(zone.Name()), "package") {
+			return zone, nil
+		}
+	}
+
+	// Fallback to first zone
+	return zones[0], nil
 }

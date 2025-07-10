@@ -20,6 +20,14 @@ monitor:
   # NOTE: Keep staleness shorter than the monitor interval.
   staleness: 1000ms
 
+  # maximum number of terminated workloads (process, container, VM, pods)
+  # to be kept in memory until the data is exported; 0 disables the limit
+  maxTerminated: 500
+
+  # minimum energy threshold (in joules) for terminated workloads
+  # terminated workloads with energy consumption below this threshold will be filtered out
+  minTerminatedEnergyThreshold: 10
+
 host:
   sysfs: /host/sys # Path to sysfs filesystem (default: /sys)
   procfs: /host/proc # Path to procfs filesystem (default: /proc)
@@ -38,8 +46,10 @@ exporter:
       - process
     metricsLevel:
       - node
-      - container
       - process
+      - container
+      - vm
+      - pod
 
 debug: # debug related config
   pprof: # pprof related config
@@ -47,6 +57,8 @@ debug: # debug related config
 
 web:
   configFile: "" # Path to TLS server config file
+  listenAddresses: # Web server listen addresses
+    - :28282
 
 kube: # kubernetes related config
   enabled: false # enable kubernetes monitoring (default: false)

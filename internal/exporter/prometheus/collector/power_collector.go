@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sustainable-computing-io/kepler/internal/exporter/prometheus/metrics"
+	"github.com/sustainable-computing-io/kepler/config"
 	"github.com/sustainable-computing-io/kepler/internal/monitor"
 )
 
@@ -23,7 +23,7 @@ type PowerDataProvider = monitor.PowerDataProvider
 type PowerCollector struct {
 	pm           PowerDataProvider
 	logger       *slog.Logger
-	metricsLevel metrics.Level
+	metricsLevel config.Level
 
 	// Lock to ensure thread safety during collection
 	mutex sync.RWMutex
@@ -97,7 +97,7 @@ func timeDesc(level, device, nodeName string, labels []string) *prometheus.Desc 
 
 // NewPowerCollector creates a collector that provides consistent metrics
 // by fetching all data in a single snapshot during collection
-func NewPowerCollector(monitor PowerDataProvider, nodeName string, logger *slog.Logger, metricsLevel metrics.Level) *PowerCollector {
+func NewPowerCollector(monitor PowerDataProvider, nodeName string, logger *slog.Logger, metricsLevel config.Level) *PowerCollector {
 	const (
 		// these labels should remain the same across all descriptors to ease querying
 		zone   = "zone"
@@ -255,7 +255,7 @@ func (c *PowerCollector) collectNodeMetrics(ch chan<- prometheus.Metric, node *m
 	)
 	for zone, energy := range node.Zones {
 		path := zone.Path()
-		zoneName := fmt.Sprintf("%s-%d", zone.Name(), zone.Index())
+		zoneName := zone.Name()
 
 		// joules
 		ch <- prometheus.MustNewConstMetric(
@@ -311,23 +311,22 @@ func (c *PowerCollector) collectProcessMetrics(ch chan<- prometheus.Metric, stat
 
 	// No need to lock, already done by the calling function
 	for pid, proc := range processes {
-		pidStr := fmt.Sprintf("%d", pid)
 
 		ch <- prometheus.MustNewConstMetric(
 			c.processCPUTimeDescriptor,
 			prometheus.CounterValue,
 			proc.CPUTotalTime,
-			pidStr, proc.Comm, proc.Exe, string(proc.Type),
+			pid, proc.Comm, proc.Exe, string(proc.Type),
 			proc.ContainerID, proc.VirtualMachineID,
 		)
 
 		for zone, usage := range proc.Zones {
-			zoneName := fmt.Sprintf("%s-%d", zone.Name(), zone.Index())
+			zoneName := zone.Name()
 			ch <- prometheus.MustNewConstMetric(
 				c.processCPUJoulesDescriptor,
 				prometheus.CounterValue,
 				usage.EnergyTotal.Joules(),
-				pidStr, proc.Comm, proc.Exe, string(proc.Type), state,
+				pid, proc.Comm, proc.Exe, string(proc.Type), state,
 				proc.ContainerID, proc.VirtualMachineID,
 				zoneName,
 			)
@@ -336,7 +335,7 @@ func (c *PowerCollector) collectProcessMetrics(ch chan<- prometheus.Metric, stat
 				c.processCPUWattsDescriptor,
 				prometheus.GaugeValue,
 				usage.Power.Watts(),
-				pidStr, proc.Comm, proc.Exe, string(proc.Type), state,
+				pid, proc.Comm, proc.Exe, string(proc.Type), state,
 				proc.ContainerID, proc.VirtualMachineID,
 				zoneName,
 			)
@@ -354,7 +353,7 @@ func (c *PowerCollector) collectContainerMetrics(ch chan<- prometheus.Metric, st
 	// No need to lock, already done by the calling function
 	for id, container := range containers {
 		for zone, usage := range container.Zones {
-			zoneName := fmt.Sprintf("%s-%d", zone.Name(), zone.Index())
+			zoneName := zone.Name()
 
 			ch <- prometheus.MustNewConstMetric(
 				c.containerCPUJoulesDescriptor,
@@ -387,7 +386,7 @@ func (c *PowerCollector) collectVMMetrics(ch chan<- prometheus.Metric, state str
 	// No need to lock, already done by the calling function
 	for id, vm := range vms {
 		for zone, usage := range vm.Zones {
-			zoneName := fmt.Sprintf("%s-%d", zone.Name(), zone.Index())
+			zoneName := zone.Name()
 			ch <- prometheus.MustNewConstMetric(
 				c.vmCPUJoulesDescriptor,
 				prometheus.CounterValue,
@@ -416,7 +415,7 @@ func (c *PowerCollector) collectPodMetrics(ch chan<- prometheus.Metric, state st
 	// No need to lock, already done by the calling function
 	for id, pod := range pods {
 		for zone, usage := range pod.Zones {
-			zoneName := fmt.Sprintf("%s-%d", zone.Name(), zone.Index())
+			zoneName := zone.Name()
 			ch <- prometheus.MustNewConstMetric(
 				c.podCPUJoulesDescriptor,
 				prometheus.CounterValue,

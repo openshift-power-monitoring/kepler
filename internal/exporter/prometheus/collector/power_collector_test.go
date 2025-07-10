@@ -16,8 +16,8 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/sustainable-computing-io/kepler/config"
 	"github.com/sustainable-computing-io/kepler/internal/device"
-	"github.com/sustainable-computing-io/kepler/internal/exporter/prometheus/metrics"
 	"github.com/sustainable-computing-io/kepler/internal/monitor"
 	"github.com/sustainable-computing-io/kepler/internal/resource"
 )
@@ -215,7 +215,7 @@ func TestPowerCollector(t *testing.T) {
 	}
 
 	testProcesses := monitor.Processes{
-		123: {
+		"123": {
 			PID:          123,
 			Comm:         "test-process",
 			Exe:          "/usr/bin/123",
@@ -285,7 +285,7 @@ func TestPowerCollector(t *testing.T) {
 	mockMonitor.On("Snapshot").Return(testData, nil)
 
 	// Create collector
-	allLevels := metrics.MetricsLevelNode | metrics.MetricsLevelProcess | metrics.MetricsLevelContainer | metrics.MetricsLevelVM | metrics.MetricsLevelPod
+	allLevels := config.MetricsLevelAll
 	collector := NewPowerCollector(mockMonitor, "test-node", logger, allLevels)
 
 	// Trigger update to ensure descriptors are created
@@ -427,7 +427,7 @@ func TestPowerCollector(t *testing.T) {
 			zonePaths = append(zonePaths, path)
 		}
 
-		assert.ElementsMatch(t, zoneNames, []string{"package-0", "dram-0"})
+		assert.ElementsMatch(t, zoneNames, []string{"package", "dram"})
 		assert.ElementsMatch(t, zonePaths, []string{
 			"/sys/class/powercap/intel-rapl/intel-rapl:0",
 			"/sys/class/powercap/intel-rapl/intel-rapl:0:1",
@@ -441,7 +441,7 @@ func TestPowerCollector(t *testing.T) {
 			"comm":      "test-process",
 			"exe":       "/usr/bin/123",
 			"type":      "regular",
-			"zone":      "package-0",
+			"zone":      "package",
 		}
 		assertMetricLabelValues(t, registry, "kepler_process_cpu_joules_total", expectedLabels, 100.0)
 		assertMetricLabelValues(t, registry, "kepler_process_cpu_watts", expectedLabels, 5.0)
@@ -453,7 +453,7 @@ func TestPowerCollector(t *testing.T) {
 			"container_id":   "abcd-efgh",
 			"container_name": "test-container",
 			"runtime":        "podman",
-			"zone":           "package-0",
+			"zone":           "package",
 		}
 		assertMetricLabelValues(t, registry, "kepler_container_cpu_joules_total", expectedLabels, 100.0)
 		assertMetricLabelValues(t, registry, "kepler_container_cpu_watts", expectedLabels, 5.0)
@@ -465,7 +465,7 @@ func TestPowerCollector(t *testing.T) {
 			"vm_id":      "abcd-efgh",
 			"vm_name":    "test-vm",
 			"hypervisor": "kvm",
-			"zone":       "package-0",
+			"zone":       "package",
 		}
 		assertMetricLabelValues(t, registry, "kepler_vm_cpu_joules_total", expectedLabels, 100.0)
 		assertMetricLabelValues(t, registry, "kepler_vm_cpu_watts", expectedLabels, 5.0)
@@ -477,7 +477,7 @@ func TestPowerCollector(t *testing.T) {
 			"pod_id":        "test-pod",
 			"pod_name":      "test-pod",
 			"pod_namespace": "default",
-			"zone":          "package-0",
+			"zone":          "package",
 		}
 		assertMetricLabelValues(t, registry, "kepler_pod_cpu_joules_total", expectedLabels, 100.0)
 		assertMetricLabelValues(t, registry, "kepler_pod_cpu_watts", expectedLabels, 5.0)
@@ -527,7 +527,7 @@ func TestTerminatedProcessExport(t *testing.T) {
 			},
 		},
 		Processes: monitor.Processes{
-			123: &monitor.Process{
+			"123": &monitor.Process{
 				PID:          123,
 				Comm:         "running-proc",
 				Exe:          "/usr/bin/running-proc",
@@ -544,7 +544,7 @@ func TestTerminatedProcessExport(t *testing.T) {
 			},
 		},
 		TerminatedProcesses: monitor.Processes{
-			456: &monitor.Process{
+			"456": &monitor.Process{
 				PID:          456,
 				Comm:         "terminated-proc",
 				Exe:          "/usr/bin/terminated-proc",
@@ -567,7 +567,7 @@ func TestTerminatedProcessExport(t *testing.T) {
 
 	mockMonitor.On("Snapshot").Return(testSnapshot, nil)
 
-	collector := NewPowerCollector(mockMonitor, "test-node", logger, metrics.MetricsLevelNode|metrics.MetricsLevelProcess|metrics.MetricsLevelContainer|metrics.MetricsLevelVM|metrics.MetricsLevelPod)
+	collector := NewPowerCollector(mockMonitor, "test-node", logger, config.MetricsLevelAll)
 
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collector)
@@ -633,7 +633,7 @@ func TestEnhancedErrorReporting(t *testing.T) {
 			},
 		},
 		Processes: monitor.Processes{
-			123: &monitor.Process{
+			"123": &monitor.Process{
 				PID:          123,
 				Comm:         "actual-proc",
 				Exe:          "/usr/bin/actual-proc",
@@ -650,7 +650,7 @@ func TestEnhancedErrorReporting(t *testing.T) {
 			},
 		},
 		TerminatedProcesses: monitor.Processes{
-			456: &monitor.Process{
+			"456": &monitor.Process{
 				PID:          456,
 				Comm:         "terminated-proc",
 				Exe:          "/usr/bin/terminated-proc",
@@ -672,7 +672,7 @@ func TestEnhancedErrorReporting(t *testing.T) {
 	}
 
 	mockMonitor.On("Snapshot").Return(testSnapshot, nil)
-	collector := NewPowerCollector(mockMonitor, "test-node", logger, metrics.MetricsLevelNode|metrics.MetricsLevelProcess|metrics.MetricsLevelContainer|metrics.MetricsLevelVM|metrics.MetricsLevelPod)
+	collector := NewPowerCollector(mockMonitor, "test-node", logger, config.MetricsLevelAll)
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collector)
 	mockMonitor.TriggerUpdate()
@@ -690,12 +690,12 @@ func TestPowerCollector_MetricsLevelFiltering(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		metricsLevel    metrics.Level
+		metricsLevel    config.Level
 		expectedMetrics map[string]bool
 	}{
 		{
 			name:         "Only Node metrics",
-			metricsLevel: metrics.MetricsLevelNode,
+			metricsLevel: config.MetricsLevelNode,
 			expectedMetrics: map[string]bool{
 				"kepler_node_cpu_joules_total":        true,
 				"kepler_node_cpu_watts":               true,
@@ -712,7 +712,7 @@ func TestPowerCollector_MetricsLevelFiltering(t *testing.T) {
 		},
 		{
 			name:         "Only Process metrics",
-			metricsLevel: metrics.MetricsLevelProcess,
+			metricsLevel: config.MetricsLevelProcess,
 			expectedMetrics: map[string]bool{
 				"kepler_node_cpu_joules_total":      false,
 				"kepler_process_cpu_joules_total":   true,
@@ -725,7 +725,7 @@ func TestPowerCollector_MetricsLevelFiltering(t *testing.T) {
 		},
 		{
 			name:         "Node and Container metrics",
-			metricsLevel: metrics.MetricsLevelNode | metrics.MetricsLevelContainer,
+			metricsLevel: config.MetricsLevelNode | config.MetricsLevelContainer,
 			expectedMetrics: map[string]bool{
 				"kepler_node_cpu_joules_total":      true,
 				"kepler_node_cpu_watts":             true,
@@ -738,7 +738,7 @@ func TestPowerCollector_MetricsLevelFiltering(t *testing.T) {
 		},
 		{
 			name:         "No metrics",
-			metricsLevel: metrics.Level(0),
+			metricsLevel: config.Level(0),
 			expectedMetrics: map[string]bool{
 				"kepler_node_cpu_joules_total":      false,
 				"kepler_process_cpu_joules_total":   false,
@@ -771,7 +771,7 @@ func TestPowerCollector_MetricsLevelFiltering(t *testing.T) {
 					UsageRatio: 0.5,
 				},
 				Processes: monitor.Processes{
-					123: &monitor.Process{
+					"123": &monitor.Process{
 						PID:          123,
 						Comm:         "test-process",
 						Exe:          "/usr/bin/test-process",
@@ -911,7 +911,7 @@ func TestTerminatedContainerExport(t *testing.T) {
 
 	mockMonitor.On("Snapshot").Return(testSnapshot, nil)
 
-	allLevels := metrics.MetricsLevelNode | metrics.MetricsLevelProcess | metrics.MetricsLevelContainer | metrics.MetricsLevelVM | metrics.MetricsLevelPod
+	allLevels := config.MetricsLevelAll
 	collector := NewPowerCollector(mockMonitor, "test-node", logger, allLevels)
 
 	registry := prometheus.NewRegistry()
@@ -1008,7 +1008,7 @@ func TestTerminatedVMExport(t *testing.T) {
 
 	mockMonitor.On("Snapshot").Return(testSnapshot, nil)
 
-	allLevels := metrics.MetricsLevelNode | metrics.MetricsLevelProcess | metrics.MetricsLevelContainer | metrics.MetricsLevelVM | metrics.MetricsLevelPod
+	allLevels := config.MetricsLevelAll
 	collector := NewPowerCollector(mockMonitor, "test-node", logger, allLevels)
 
 	registry := prometheus.NewRegistry()
